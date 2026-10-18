@@ -45,9 +45,9 @@ void echoSurface(realitykit::surface_parameters params)
 
     // Light overlay: the fill is faint so the camera stays bright underneath; the grid
     // carries the shape. Everything fades out with distance.
-    float alpha = fade * (0.45 + 0.45 * line);
+    float alpha = fade * (0.6 + 0.4 * line);
 
     params.surface().set_base_color(half3(tint));
-    params.surface().set_emissive_color(half3(tint) * half(0.6 * line));
+    params.surface().set_emissive_color(half3(tint) * half(0.25 + 0.6 * line));
     params.surface().set_opacity(half(saturate(alpha)));
 }

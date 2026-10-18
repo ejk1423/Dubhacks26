@@ -21,11 +21,15 @@ nonisolated enum CameraFeedPreference: String, CaseIterable, Hashable, Sendable 
         }
     }
 
-    var mode: CameraFeedMode {
+    /// ARKit never draws the camera: `CameraFeedView` does, in greyscale, underneath.
+    var mode: CameraFeedMode { .transparent }
+
+    /// Brightness of the greyscale feed, 0 (black) ... 1.
+    var feedBrightness: Float {
         switch self {
-        case .full: return .full
-        case .dimmed: return .dimmed(ev: -2.5)
-        case .hidden: return .hidden
+        case .full: return 1
+        case .dimmed: return 0.45
+        case .hidden: return 0
         }
     }
 }

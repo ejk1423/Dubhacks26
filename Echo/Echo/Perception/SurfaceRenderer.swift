@@ -25,11 +25,11 @@ final class SurfaceRenderer {
     // MARK: Palette
 
     enum Palette {
-        static let floor     = UIColor(red: 0.40, green: 0.95, blue: 0.65, alpha: 1)   // green: walkable
-        static let wall      = UIColor(red: 0.45, green: 0.90, blue: 1.00, alpha: 1)   // light cyan
+        static let floor     = UIColor(red: 0.25, green: 0.95, blue: 0.55, alpha: 1)   // green: walkable
+        static let wall      = UIColor(red: 0.20, green: 0.80, blue: 1.00, alpha: 1)   // cyan
         static let ceiling   = UIColor(red: 0.35, green: 0.45, blue: 1.00, alpha: 1)   // (not drawn)
-        static let furniture = UIColor(red: 1.00, green: 0.78, blue: 0.40, alpha: 1)   // warm amber: obstacles
-        static let unknown   = UIColor(red: 0.85, green: 0.88, blue: 0.95, alpha: 1)   // near white
+        static let furniture = UIColor(red: 1.00, green: 0.70, blue: 0.25, alpha: 1)   // amber: obstacles
+        static let unknown   = UIColor(red: 0.70, green: 0.60, blue: 1.00, alpha: 1)   // lavender
         static let hazard    = UIColor(red: 1.00, green: 0.16, blue: 0.16, alpha: 1)   // red
 
         static func color(for bucket: SurfaceBucket) -> UIColor {

@@ -20,6 +20,7 @@
 //  carried out after that sheet has gone.
 //
 
+import ARKit
 import SwiftUI
 
 struct ContentView: View {
@@ -28,6 +29,7 @@ struct ContentView: View {
     @State private var narrator = Narrator()
     @State private var prefs = HUDPreferences()
     @State private var announcer = StatusAnnouncer()
+    @State private var feed = CameraFeedRenderer()
 
     @State private var showSettings = false
     @State private var showMap = false
@@ -39,8 +41,13 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ARWireframeView(manager: manager)
-            .ignoresSafeArea()
+        ZStack {
+            // Greyscale camera underneath; the AR view above it is transparent and draws
+            // only the coloured LiDAR surfaces.
+            CameraFeedView(renderer: feed)
+            ARWireframeView(manager: manager)
+        }
+        .ignoresSafeArea()
             .overlay(alignment: .topTrailing) { mapPanel }
             .overlay(alignment: .topLeading) { problemNote }
             .overlay(alignment: .bottom) { bottomColumn }
@@ -71,7 +78,10 @@ struct ContentView: View {
             .onChange(of: audio.hapticsEnabled) { prefs.haptics = audio.hapticsEnabled }
             .onChange(of: audio.hapticsOnly) { prefs.hapticsOnly = audio.hapticsOnly }
             .onChange(of: narrator.isEnabled) { prefs.voice = narrator.isEnabled }
-            .onChange(of: prefs.cameraFeed) { manager.setCameraFeed(prefs.cameraFeed.mode) }
+            .onChange(of: prefs.cameraFeed) {
+                manager.setCameraFeed(prefs.cameraFeed.mode)
+                feed.brightness = prefs.cameraFeed.feedBrightness
+            }
     }
 
     // MARK: Lifecycle
@@ -83,6 +93,8 @@ struct ContentView: View {
             narrator.update(snapshot: snapshot, vision: manager.visionReport,
                             closeness: audio.closeness, targetDistance: audio.targetDistance)
         }
+        manager.onFrame = { [feed] frame in feed.submit(frame.capturedImage) }
+        feed.brightness = prefs.cameraFeed.feedBrightness
         narrator.audio = audio
         audio.isMuted = !prefs.beeps
         audio.masterVolume = prefs.volume
@@ -149,8 +161,8 @@ struct ContentView: View {
                  coneHalfAngle: audio.coneHalfAngle, alertRange: audio.alertRange) {
             showMap = true
         }
-        .padding(.trailing, HUDMetrics.margin)
-        .padding(.top, HUDMetrics.spacingSmall)
+        .padding(.trailing, -HUDMetrics.spacingSmall)
+        .padding(.top, -HUDMetrics.spacingSmall)
         // The HUD sits over camera content, so it keeps a dark appearance; the sheets
         // follow the system. Colours stay semantic so the swap is just the scheme.
         .environment(\.colorScheme, .dark)

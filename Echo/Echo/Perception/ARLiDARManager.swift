@@ -176,7 +176,11 @@ final class ARLiDARManager: NSObject {
             arView.environment.background = .cameraFeed(exposureCompensation: ev)
         case .full:
             arView.environment.background = .cameraFeed()
+        case .transparent:
+            arView.environment.background = .color(.clear)
         }
+        arView.backgroundColor = .clear
+        arView.isOpaque = false
     }
 
     private static func probeCapabilities() -> DeviceCapabilities {

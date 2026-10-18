@@ -393,6 +393,8 @@ nonisolated enum CameraFeedMode: Sendable, Equatable {
     /// Camera feed darkened by `ev` stops (negative values dim). -2.5 reads as a night-vision feed.
     case dimmed(ev: Float)
     case full
+    /// No ARKit background at all: the app draws the camera itself underneath (greyscale).
+    case transparent
 }
 
 // MARK: - simd helpers

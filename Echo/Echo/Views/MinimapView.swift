@@ -11,8 +11,9 @@
 //       when they are walking toward the user),
 //    5. the current target and the user's arrow; the full-screen map adds metre rings
 //       and the alert cone.
-//  The map stays put (world-fixed, so it never spins); the user's arrow and the camera's
-//  detections turn with the heading instead. No frame: the panel fades into the camera.
+//  Heading-up: the map turns so the way the user faces is up, with the heading angle
+//  low-pass filtered between frames so the turn is smooth, never jittery. No frame:
+//  the panel fades into the camera.
 //
 
 import SwiftUI
@@ -28,6 +29,7 @@ struct MinimapView: View {
     var detailed = false
 
     @State private var cache = MinimapImageCache()
+    @State private var headingFilter = HeadingFilter()
 
     private var people: Color { .teal }
     private var hazard: Color { .orange }
@@ -41,11 +43,15 @@ struct MinimapView: View {
             let s: CGFloat = detailed ? 1.8 : 1
 
             guard let snap = snapshot else { return }
-            // Screen angle of the heading (world x -> screen x, world z -> screen y).
-            let headingAngle = atan2(Double(snap.heading.z), Double(snap.heading.x))
+            // Screen angle of the heading (world x -> screen x, world z -> screen y), smoothed.
+            let headingAngle = headingFilter.update(atan2(Double(snap.heading.z), Double(snap.heading.x)))
 
-            // World layer: fixed.
-            drawWorld(snap, in: context, centre: centre, scale: scale, mark: s)
+            // World layer, rotated so the heading points up.
+            var world = context
+            world.translateBy(x: centre.x, y: centre.y)
+            world.rotate(by: Angle(radians: -.pi / 2 - headingAngle))
+            world.translateBy(x: -centre.x, y: -centre.y)
+            drawWorld(snap, in: world, centre: centre, scale: scale, mark: s)
 
             // Metre rings and the cone only on the full map; the HUD map stays clean.
             if detailed {
@@ -58,10 +64,9 @@ struct MinimapView: View {
                 }
             }
 
-            // User layer: turns with the heading. Drawn with "up" = heading, then rotated.
+            // User layer: up is already the heading, so no rotation.
             var user = context
             user.translateBy(x: centre.x, y: centre.y)
-            user.rotate(by: Angle(radians: headingAngle + .pi / 2))
             if detailed { drawCone(in: user, scale: scale) }
             drawPeople(in: user, scale: scale, mark: s)
 
@@ -169,6 +174,27 @@ struct MinimapView: View {
                              at: CGPoint(x: p.x, y: p.y - d - 2), anchor: .bottom)
             }
         }
+    }
+}
+
+// MARK: - Heading smoothing
+
+/// Low-pass filter on the heading angle so the map turns smoothly (handles the wrap at
+/// ±π). State lives outside the Canvas closure.
+final class HeadingFilter {
+    private var angle: Double?
+
+    func update(_ target: Double) -> Double {
+        guard let current = angle else {
+            angle = target
+            return target
+        }
+        var delta = target - current
+        while delta > .pi { delta -= 2 * .pi }
+        while delta < -.pi { delta += 2 * .pi }
+        let next = current + delta * 0.22
+        angle = next
+        return next
     }
 }
 
