@@ -25,7 +25,7 @@ final class SurfaceRenderer {
     // MARK: Palette
 
     enum Palette {
-        static let floor     = UIColor(red: 0.12, green: 0.60, blue: 0.35, alpha: 1)   // dim green: walkable, recedes
+        static let floor     = UIColor(red: 0.10, green: 0.45, blue: 0.28, alpha: 1)   // dim green: walkable, recedes
         static let wall      = UIColor(red: 0.00, green: 0.90, blue: 1.00, alpha: 1)   // cyan
         static let ceiling   = UIColor(red: 0.35, green: 0.45, blue: 1.00, alpha: 1)   // (not drawn)
         static let furniture = UIColor(red: 1.00, green: 0.68, blue: 0.20, alpha: 1)   // amber: obstacles
@@ -200,7 +200,7 @@ final class SurfaceRenderer {
                 // Fall through to the flat material.
             }
         }
-        return makeFlatMaterial(color, opacity: 0.22)
+        return makeFlatMaterial(color, opacity: 0.6)
     }
 
     private static func makeFlatMaterial(_ color: UIColor, opacity: Float) -> UnlitMaterial {

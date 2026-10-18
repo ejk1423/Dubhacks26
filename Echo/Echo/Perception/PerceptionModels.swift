@@ -50,14 +50,17 @@ nonisolated struct PerceptionConfig: Sendable {
     var obstacleReleaseRate: Float = 0.5   // m/s a sector reading may recede (approaching is instant)
     var chunkEvictionRadius: Float = 15.0  // stored mesh farther than this is dropped
     var forwardHalfWidth: Float = 0.4      // half-width of the walking corridor (shoulder width)
-    var depthSampleStep: Int = 2           // sample every Nth depth-map pixel for the sonar
+    var depthSampleStep: Int = 1           // sample every Nth depth-map pixel for the sonar and map
+    var mapRadius: Float = 4.0             // half-size of the top-down occupancy map
+    var mapCellSize: Float = 0.1
+    var mapMinVertices: Int = 3            // mesh vertices a cell needs before it counts
     var depthFOVHalfAngle: Float = 0.35    // radians; mesh hits inside this cone defer to the depth map
 
     // Scheduling and rendering.
-    var analysisInterval: TimeInterval = 0.1   // 10 Hz hazard + sonar analysis
+    var analysisInterval: TimeInterval = 0.08  // ~12 Hz hazard + sonar + map analysis
     var maxAnchorUpdatesPerFrame: Int = 1      // mesh anchors converted per ARFrame (60 Hz)
     var maxUpsertsInFlight: Int = 2            // chunks queued on the store before ingestion waits
-    var renderRadius: Float = 3.0              // mesh chunks farther than this are hidden (shader fades out by 3 m)
+    var renderRadius: Float = 3.5              // mesh chunks farther than this are hidden (shader fades out by 3.5 m)
     var hazardOverlayLift: Float = 0.015       // lift the red overlay above the mesh to avoid z-fighting
     var maxOverlayTriangles: Int = 20_000
 }
@@ -193,6 +196,29 @@ nonisolated enum GroundSource: Sendable, Equatable {
     case assumed
 }
 
+/// Top-down occupancy map of the surroundings, world-axis aligned, centred near the user.
+/// Cell values: `OccupancyMap.Cell` with `liveFlag` set when this frame's depth map saw it.
+nonisolated struct OccupancyMap: Sendable {
+    enum Cell: UInt8 {
+        case empty = 0, floor, wall, furniture, obstacle
+    }
+    static let liveFlag: UInt8 = 0x80
+
+    /// World (x, z) of the corner of cell (0, 0).
+    let origin: SIMD2<Float>
+    let cellSize: Float
+    /// Cells per side; index = row (z) * size + column (x).
+    let size: Int
+    let cells: [UInt8]
+
+    func cell(_ column: Int, _ row: Int) -> Cell {
+        Cell(rawValue: cells[row * size + column] & ~Self.liveFlag) ?? .empty
+    }
+    func isLive(_ column: Int, _ row: Int) -> Bool {
+        cells[row * size + column] & Self.liveFlag != 0
+    }
+}
+
 /// Snapshot of the scene published every `PerceptionConfig.analysisInterval`.
 nonisolated struct SceneSnapshot: Sendable {
     let timestamp: TimeInterval
@@ -208,6 +234,9 @@ nonisolated struct SceneSnapshot: Sendable {
     /// 4 = behind, 6 = left. `.infinity` when the sector is clear.
     /// `nearestForwardObstacle` is the closest thing in a narrow corridor straight ahead.
     let sectorDistances: [Float]
+    /// Nearest obstacle per 15-degree sector (24 entries, index 0 ahead, clockwise).
+    let fineSectorHits: [ObstacleHit?]
+    let map: OccupancyMap
     let tripHazards: [TripHazard]
     let meshAnchorCount: Int
     let vertexCount: Int

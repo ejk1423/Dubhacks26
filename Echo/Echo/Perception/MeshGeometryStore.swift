@@ -12,6 +12,7 @@
 //      as 8 coarse sectors) and in a narrow corridor straight ahead, using distance
 //      histograms (a bin needs several vertices, so one stray vertex is not a wall)
 //      smoothed over time (approach is instant, recession is rate-limited),
+//    * builds a top-down occupancy map (mesh plus this frame's depth map) for the HUD,
 //    * scans a 1-3 m corridor along the walking direction for negative drops
 //      (potholes, stairs) and positive spikes (curbs, rocks) relative to ground,
 //      clusters them into `TripHazard`s, reports only those that persist over several
@@ -363,12 +364,36 @@ actor MeshGeometryStore {
                             s: d.x * right.x + d.z * right.z, fromDepth: true)
         }
 
+        // Top-down occupancy map (world-aligned grid centred on the user).
+        let mapSize = Int((2 * cfg.mapRadius / cfg.mapCellSize).rounded(.up))
+        let mapOrigin = SIMD2<Float>(
+            ((p0.x - cfg.mapRadius) / cfg.mapCellSize).rounded(.down) * cfg.mapCellSize,
+            ((p0.z - cfg.mapRadius) / cfg.mapCellSize).rounded(.down) * cfg.mapCellSize
+        )
+        var mapObstacle = [UInt16](repeating: 0, count: mapSize * mapSize)
+        var mapObstacleClass = [UInt8](repeating: MeshClass.none, count: mapSize * mapSize)
+        var mapFloor = [UInt16](repeating: 0, count: mapSize * mapSize)
+        var mapLive = [UInt16](repeating: 0, count: mapSize * mapSize)
+        func mapIndex(_ v: SIMD3<Float>) -> Int? {
+            let column = Int((v.x - mapOrigin.x) / cfg.mapCellSize)
+            let row = Int((v.z - mapOrigin.y) / cfg.mapCellSize)
+            guard column >= 0, column < mapSize, row >= 0, row < mapSize else { return nil }
+            return row * mapSize + column
+        }
+        for v in depthPoints {
+            let dy = v.y - ground
+            guard dy >= cfg.obstacleMinHeight, dy <= cfg.obstacleMaxHeight, let idx = mapIndex(v) else { continue }
+            mapLive[idx] += 1
+        }
+
         for (ci, sc) in chunkList.enumerated() {
+            let horizontal = Self.horizontalDistance(from: p0, toBox: sc.aabbMin, sc.aabbMax)
             let sonarRelevant =
-                Self.horizontalDistance(from: p0, toBox: sc.aabbMin, sc.aabbMax) <= cfg.obstacleMaxRange
+                horizontal <= cfg.obstacleMaxRange
                 && sc.aabbMax.y >= sonarYMin && sc.aabbMin.y <= sonarYMax
             let corridorRelevant = hazardsEnabled && Self.overlaps(sc.aabbMin, sc.aabbMax, corridorMin, corridorMax)
-            if !sonarRelevant && !corridorRelevant { continue }
+            let mapRelevant = horizontal <= cfg.mapRadius
+            if !sonarRelevant && !corridorRelevant && !mapRelevant { continue }
 
             sc.world.withUnsafeBufferPointer { w in
                 sc.vertexClasses.withUnsafeBufferPointer { cls in
@@ -385,6 +410,17 @@ actor MeshGeometryStore {
                            dy >= cfg.obstacleMinHeight, dy <= cfg.obstacleMaxHeight,
                            c != MeshClass.floor, c != MeshClass.ceiling {
                             bins.accumulate(v, c, t: t, s: s, fromDepth: false)
+                        }
+
+                        // -- Occupancy map: solid things at body height, and the floor.
+                        if mapRelevant, let idx = mapIndex(v) {
+                            if dy >= cfg.obstacleMinHeight, dy <= cfg.obstacleMaxHeight,
+                               c != MeshClass.floor, c != MeshClass.ceiling {
+                                mapObstacle[idx] += 1
+                                if c != MeshClass.none { mapObstacleClass[idx] = c }
+                            } else if c == MeshClass.floor || abs(dy) < 0.15 {
+                                mapFloor[idx] += 1
+                            }
                         }
 
                         // -- Trip-hazard corridor: floor-ish surfaces only.
@@ -626,7 +662,30 @@ actor MeshGeometryStore {
             }
         }
 
-        // ---- 6. Snapshot -------------------------------------------------------
+        // ---- 6. Occupancy map cells ---------------------------------------------
+        var mapCells = [UInt8](repeating: 0, count: mapSize * mapSize)
+        let minVertices = UInt16(cfg.mapMinVertices)
+        for idx in 0..<mapCells.count {
+            var cell = OccupancyMap.Cell.empty
+            if mapObstacle[idx] >= minVertices {
+                switch mapObstacleClass[idx] {
+                case MeshClass.wall, MeshClass.door, MeshClass.window: cell = .wall
+                case MeshClass.table, MeshClass.seat:                   cell = .furniture
+                default:                                                cell = .obstacle
+                }
+            } else if mapFloor[idx] >= minVertices {
+                cell = .floor
+            }
+            var value = cell.rawValue
+            if mapLive[idx] >= 2 {
+                if cell == .empty || cell == .floor { value = OccupancyMap.Cell.obstacle.rawValue }
+                value |= OccupancyMap.liveFlag
+            }
+            mapCells[idx] = value
+        }
+        let map = OccupancyMap(origin: mapOrigin, cellSize: cfg.mapCellSize, size: mapSize, cells: mapCells)
+
+        // ---- 7. Snapshot -------------------------------------------------------
         let snapshot = SceneSnapshot(
             timestamp: timestamp,
             cameraTransform: cameraTransform,
@@ -637,6 +696,8 @@ actor MeshGeometryStore {
             nearestObstacle: best,
             nearestForwardObstacle: bestFwd,
             sectorDistances: coarseSectors,
+            fineSectorHits: sectorHits,
+            map: map,
             tripHazards: hazards,
             meshAnchorCount: chunks.count,
             vertexCount: totalVertices
