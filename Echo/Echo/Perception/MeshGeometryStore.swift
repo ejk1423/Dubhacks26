@@ -59,6 +59,7 @@ actor MeshGeometryStore {
         var count = 0            // mesh floor-ish vertices inside the trip band (drops and bumps included)
         var obstacleCount = 0    // mesh vertices above `maxTripHeight`
         var dropCount = 0
+        var dropFloorCount = 0   // of the drop vertices, those the mesh classifies as floor
         var bumpCount = 0
         var dropSum = SIMD3<Float>(repeating: 0)
         var bumpSum = SIMD3<Float>(repeating: 0)
@@ -642,6 +643,7 @@ actor MeshGeometryStore {
                                 if dy > cells[idx].maxDy { cells[idx].maxDy = dy }
                                 if dy <= -cfg.dropThreshold {
                                     cells[idx].dropCount += 1
+                                    if c == MeshClass.floor { cells[idx].dropFloorCount += 1 }
                                     cells[idx].dropSum += v
                                     candidates.append(Candidate(chunkIndex: ci, vertex: i, cell: idx))
                                 } else if dy >= cfg.bumpThreshold {
@@ -742,7 +744,10 @@ actor MeshGeometryStore {
             let cell = cells[idx]
             let minShare = cfg.minHazardFraction * Float(cell.count)
             if cell.dropCount >= cfg.minHazardVertices, Float(cell.dropCount) >= minShare,
-               cell.dropCount >= cell.bumpCount {
+               cell.dropCount >= cell.bumpCount,
+               // The depth camera seeing floor at normal height right here contradicts the
+               // mesh: phantom geometry below a glossy floor, not a step down.
+               cell.liveFloor < 3 {
                 kinds[idx] = .drop
             } else if cell.bumpCount >= cfg.minHazardVertices, Float(cell.bumpCount) >= minShare {
                 kinds[idx] = .bump
@@ -799,6 +804,16 @@ actor MeshGeometryStore {
             if kind != .unknown {
                 let underSomething = members.contains { cells[$0].obstacleCount >= cfg.minHazardVertices }
                 if columns.count < cfg.minHazardWidthCells || underSomething { continue }
+            }
+            if kind == .drop {
+                // A real step down has a lower floor that is either seen by the depth camera
+                // right now or classified as floor by the mesh. Phantom points under a
+                // reflective floor are neither.
+                let seenBelow = members.reduce(0) { $0 + cells[$1].liveBelow }
+                let dropVertices = members.reduce(0) { $0 + cells[$1].dropCount }
+                let floorVertices = members.reduce(0) { $0 + cells[$1].dropFloorCount }
+                let classifiedFloor = dropVertices > 0 && Float(floorVertices) >= 0.5 * Float(dropVertices)
+                if seenBelow < 6 && !classifiedFloor { continue }
             }
 
             var position = SIMD3<Float>(repeating: 0)

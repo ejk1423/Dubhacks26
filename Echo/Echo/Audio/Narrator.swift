@@ -107,6 +107,7 @@ final class Narrator {
     @ObservationIgnored private var sideOpen: [Bool?] = [nil, nil]          // left, right
     @ObservationIgnored private var sideOpenSince: [TimeInterval?] = [nil, nil]
     @ObservationIgnored private var lastPrune: TimeInterval = 0
+    @ObservationIgnored private var approachingSince: TimeInterval?
 
     // Tuning
     @ObservationIgnored let hazardLeadTime: Float = 1.5        // seconds before reaching a step
@@ -220,11 +221,19 @@ final class Narrator {
 
             // 2b. Something that is not a tracked person coming at the user (a cart, a bike, a
             // person the camera has not boxed yet).
-            if snapshot.isTargetApproaching, snapshot.targetApproachSpeed >= 0.6, let targetDistance, targetDistance <= 2.5,
+            // The geometry-only estimate is noisy while the user walks or the sonar switches
+            // targets, so: never in Quiet mode, and otherwise only while standing still, with
+            // a clear approach held for half a second.
+            if verbosity != .quiet, snapshot.isTargetApproaching, snapshot.targetApproachSpeed >= 0.7,
+               !walking, let targetDistance, targetDistance <= 2.5,
                !fresh.detections.contains(where: { $0.movingTowardYou }) {
-                if say("Something coming toward you", key: "approachTarget", every: 20, interrupt: true, alert: true, now: now) {
+                if approachingSince == nil { approachingSince = now }
+                if now - approachingSince! >= 0.5,
+                   say("Something coming toward you", key: "approachTarget", every: 20, interrupt: true, alert: true, now: now) {
                     return
                 }
+            } else {
+                approachingSince = nil
             }
 
             // 3. People and animals in the walking line, about to be reached.
