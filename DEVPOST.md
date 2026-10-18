@@ -31,13 +31,7 @@ Swift, ARKit, RealityKit, Apple Vision, Metal, AVFoundation. About 6,700 lines w
 
 **Trip hazards.** A grid over the corridor ahead accumulates floor points by height relative to ground. Cells at ±10–12 cm cluster into hazards that must span the path, have nothing standing on them, and persist across frames. Each hazard carries its footprint, so a compact or tall bump (a bag, a bean bag) is "something on the floor", not a step. Drops need their lower floor confirmed by the depth camera.
 
-**Timing.** Beeps and voice both work on time-to-reach rather than distance. With distance $d$ and closing speed $v$:
-
-$$t = \frac{d}{v}, \qquad \text{warn when } t \le \tau \ \text{ or } \ d \le d_{\min}$$
-
-with $\tau = 1.3$ s for beeps and $1.5$ s for "Step up". Closeness $c$, which drives cadence and loudness, is measured against the distance covered in that lead time:
-
-$$c = \frac{r - d}{r - d_{\text{touch}}}, \qquad r = \min\!\big(r_{\max},\ \max(r_{\min},\ v\tau)\big)$$
+**Timing.** Beeps and voice both work on time-to-reach rather than distance. With distance `d` and closing speed `v`, time-to-reach is `t = d / v`, and Echo warns when `t ≤ τ` or `d ≤ d_min`, with `τ = 1.3 s` for beeps and `1.5 s` for "Step up". Closeness `c`, which drives cadence and loudness, is measured against the distance covered in that lead time: `c = (r − d) / (r − d_touch)`, where `r = clamp(v · τ, r_min, r_max)`.
 
 **Vision.** The LiDAR map is clustered into discrete objects; each object's 3D box is projected into the camera image and that crop is classified, with scores that accumulate and decay across frames so a name must be seen repeatedly. People and animals are detected, tracked, given a distance from the depth inside their box and a velocity from a least-squares fit, which is how Echo knows someone is walking *toward* you. The floor patch at a hazard is classified as step, object or flat (a rug is not a step). Signs are read and remembered with a world position.
 
