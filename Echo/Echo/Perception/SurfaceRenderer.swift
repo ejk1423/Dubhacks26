@@ -36,11 +36,11 @@ final class SurfaceRenderer {
         /// How strongly each class is drawn (shader custom parameter x).
         static func strength(for bucket: SurfaceBucket) -> Float {
             switch bucket {
-            case .floor:     return 0.30
-            case .wall:      return 0.38
+            case .floor:     return 0.40
+            case .wall:      return 0.50
             case .ceiling:   return 0
-            case .furniture: return 0.85
-            case .unknown:   return 0.22
+            case .furniture: return 0.90
+            case .unknown:   return 0.32
             }
         }
 
