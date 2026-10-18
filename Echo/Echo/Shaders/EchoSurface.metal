@@ -2,9 +2,10 @@
 //  EchoSurface.metal
 //  Echo
 //
-//  Surface shader for the LiDAR mesh. Each surface is a faint tinted fill (so the
-//  camera stays bright) with a fine world-space grid that shows its shape, faded by
-//  horizontal distance from the user so only the nearby room is drawn.
+//  Surface shader for the LiDAR mesh. Each surface is a faint fill with a fine
+//  world-space grid that shows its shape, faded by horizontal distance from the user so
+//  only the nearby room is drawn. Walls and floor are neutral and faint; obstacles
+//  (furniture) carry the one accent colour at full strength.
 //
 //  Everything is computed from RealityKit's own uniforms (view transform, time), so
 //  nothing on the CPU has to update as the user walks.
@@ -45,9 +46,13 @@ void echoSurface(realitykit::surface_parameters params)
 
     // Light overlay: the fill is faint so the camera stays bright underneath; the grid
     // carries the shape. Everything fades out with distance.
-    float alpha = fade * (0.6 + 0.4 * line);
+    // Per-material strength (custom parameter x): walls and floor are faint, obstacles
+    // strong, so colour is spent where it matters.
+    float strength = params.uniforms().custom_parameter().x;
+    if (strength <= 0.0) { strength = 0.5; }
+    float alpha = fade * strength * (0.55 + 0.45 * line);
 
     params.surface().set_base_color(half3(tint));
-    params.surface().set_emissive_color(half3(tint) * half(0.25 + 0.6 * line));
+    params.surface().set_emissive_color(half3(tint) * half(0.15 + 0.5 * line));
     params.surface().set_opacity(half(saturate(alpha)));
 }

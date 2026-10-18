@@ -111,7 +111,7 @@ struct MinimapView: View {
         let map = snap.map
         if let image = cache.image(for: map, timestamp: snap.timestamp, palette: .dark) {
             let side = CGFloat(map.size) * CGFloat(map.cellSize) * scale
-            world.draw(image.interpolation(.none),
+            world.draw(image.interpolation(.medium),
                        in: CGRect(origin: point(map.origin.x, map.origin.y), size: CGSize(width: side, height: side)))
         }
 
@@ -210,8 +210,8 @@ nonisolated struct MinimapPalette: Equatable, Sendable {
     var live: SIMD4<UInt8>
 
     static let dark = MinimapPalette(
-        floor: [70, 70, 70, 70], wall: [250, 250, 250, 250], furniture: [235, 185, 110, 235],
-        obstacle: [185, 185, 185, 185], live: [10, 132, 255, 255])
+        floor: [64, 64, 64, 64], wall: [250, 250, 250, 250], furniture: [200, 200, 200, 200],
+        obstacle: [150, 150, 150, 150], live: [10, 132, 255, 255])
 }
 
 /// Rasterises the occupancy grid into one small RGBA image per snapshot.
@@ -228,12 +228,42 @@ final class MinimapImageCache {
         return image
     }
 
+    /// Cleans the speckle out of the grid before painting: a lone cell with no neighbour of
+    /// its kind is dropped, and an empty cell with four or more neighbours of one kind is
+    /// filled, so walls read as lines rather than dust.
+    private static func cleaned(_ map: OccupancyMap) -> [UInt8] {
+        let n = map.size
+        let source = map.cells
+        var out = source
+        func kindAt(_ x: Int, _ y: Int) -> UInt8 { source[y * n + x] & ~OccupancyMap.liveFlag }
+        for y in 1..<(n - 1) {
+            for x in 1..<(n - 1) {
+                let i = y * n + x
+                let kind = source[i] & ~OccupancyMap.liveFlag
+                var counts = [UInt8: Int]()
+                for dy in -1...1 {
+                    for dx in -1...1 where dx != 0 || dy != 0 {
+                        let k = kindAt(x + dx, y + dy)
+                        if k != 0 { counts[k, default: 0] += 1 }
+                    }
+                }
+                if kind != 0 {
+                    if counts[kind, default: 0] == 0 { out[i] = source[i] & OccupancyMap.liveFlag }
+                } else if let best = counts.max(by: { $0.value < $1.value }), best.value >= 4 {
+                    out[i] = best.key | (source[i] & OccupancyMap.liveFlag)
+                }
+            }
+        }
+        return out
+    }
+
     private static func render(_ map: OccupancyMap, palette: MinimapPalette) -> CGImage? {
         let n = map.size
-        guard n > 0, map.cells.count >= n * n else { return nil }
+        guard n > 2, map.cells.count >= n * n else { return nil }
+        let cells = cleaned(map)
         var pixels = [UInt8](repeating: 0, count: n * n * 4)
         for i in 0..<(n * n) {
-            let raw = map.cells[i]
+            let raw = cells[i]
             let live = raw & OccupancyMap.liveFlag != 0
             let kind = OccupancyMap.Cell(rawValue: raw & ~OccupancyMap.liveFlag) ?? .empty
             let px: SIMD4<UInt8>

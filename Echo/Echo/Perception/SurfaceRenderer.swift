@@ -25,12 +25,24 @@ final class SurfaceRenderer {
     // MARK: Palette
 
     enum Palette {
-        static let floor     = UIColor(red: 0.25, green: 0.95, blue: 0.55, alpha: 1)   // green: walkable
-        static let wall      = UIColor(red: 0.20, green: 0.80, blue: 1.00, alpha: 1)   // cyan
+        // Monochrome except for obstacles: colour is spent on the thing you can walk into.
+        static let floor     = UIColor(red: 0.80, green: 0.90, blue: 0.84, alpha: 1)   // faint cool white
+        static let wall      = UIColor(red: 0.90, green: 0.93, blue: 1.00, alpha: 1)   // faint white
         static let ceiling   = UIColor(red: 0.35, green: 0.45, blue: 1.00, alpha: 1)   // (not drawn)
-        static let furniture = UIColor(red: 1.00, green: 0.70, blue: 0.25, alpha: 1)   // amber: obstacles
-        static let unknown   = UIColor(red: 0.70, green: 0.60, blue: 1.00, alpha: 1)   // lavender
+        static let furniture = UIColor(red: 1.00, green: 0.66, blue: 0.20, alpha: 1)   // amber: obstacles
+        static let unknown   = UIColor(red: 0.85, green: 0.85, blue: 0.88, alpha: 1)   // faint grey
         static let hazard    = UIColor(red: 1.00, green: 0.16, blue: 0.16, alpha: 1)   // red
+
+        /// How strongly each class is drawn (shader custom parameter x).
+        static func strength(for bucket: SurfaceBucket) -> Float {
+            switch bucket {
+            case .floor:     return 0.30
+            case .wall:      return 0.38
+            case .ceiling:   return 0
+            case .furniture: return 0.85
+            case .unknown:   return 0.22
+            }
+        }
 
         static func color(for bucket: SurfaceBucket) -> UIColor {
             switch bucket {
@@ -69,7 +81,8 @@ final class SurfaceRenderer {
 
         let shader = Self.loadSurfaceShader(logger: logger)
         for bucket in SurfaceBucket.allCases {
-            bucketMaterials[bucket] = Self.makeSurfaceMaterial(Palette.color(for: bucket), shader: shader)
+            bucketMaterials[bucket] = Self.makeSurfaceMaterial(Palette.color(for: bucket),
+                                                               strength: Palette.strength(for: bucket), shader: shader)
         }
 
         hazardFillMaterial = Self.makeFlatMaterial(Palette.hazard, opacity: 0.22)
@@ -188,11 +201,12 @@ final class SurfaceRenderer {
         return CustomMaterial.SurfaceShader(named: "echoSurface", in: library)
     }
 
-    private static func makeSurfaceMaterial(_ color: UIColor, shader: CustomMaterial.SurfaceShader?) -> any Material {
+    private static func makeSurfaceMaterial(_ color: UIColor, strength: Float, shader: CustomMaterial.SurfaceShader?) -> any Material {
         if let shader {
             do {
                 var material = try CustomMaterial(surfaceShader: shader, lightingModel: .unlit)
                 material.baseColor = .init(tint: color)
+                material.custom.value = SIMD4(strength, 0, 0, 0)
                 material.blending = .transparent(opacity: 1.0)   // the shader sets the real opacity
                 material.faceCulling = .none
                 return material
@@ -200,7 +214,7 @@ final class SurfaceRenderer {
                 // Fall through to the flat material.
             }
         }
-        return makeFlatMaterial(color, opacity: 0.6)
+        return makeFlatMaterial(color, opacity: 0.5 * strength)
     }
 
     private static func makeFlatMaterial(_ color: UIColor, opacity: Float) -> UnlitMaterial {

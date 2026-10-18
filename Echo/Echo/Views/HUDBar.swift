@@ -106,7 +106,7 @@ struct MapPanel: View {
     let alertRange: Float
     let action: () -> Void
 
-    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 272
+    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 360
 
     var body: some View {
         Button {
@@ -115,16 +115,16 @@ struct MapPanel: View {
         } label: {
             MinimapView(snapshot: snapshot, vision: vision, radius: radius,
                         coneHalfAngle: coneHalfAngle, alertRange: alertRange)
-                .frame(width: min(size, 320), height: min(size, 320))
+                .frame(width: min(size, 420), height: min(size, 420))
                 // Both the dark backing and the mask reach full transparency inside the
                 // inscribed circle, so no corner of the square ever shows.
                 .background(
                     RadialGradient(colors: [.black.opacity(0.7), .black.opacity(0.62), .clear],
-                                   center: .center, startRadius: 0, endRadius: min(size, 320) * 0.5)
+                                   center: .center, startRadius: 0, endRadius: min(size, 420) * 0.5)
                 )
                 .mask(
                     RadialGradient(colors: [.black, .black, .clear],
-                                   center: .center, startRadius: 0, endRadius: min(size, 320) * 0.5)
+                                   center: .center, startRadius: 0, endRadius: min(size, 420) * 0.5)
                 )
                 .contentShape(.circle)
         }
