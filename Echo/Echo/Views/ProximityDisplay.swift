@@ -57,9 +57,6 @@ struct ProximityDisplay: View {
             .multilineTextAlignment(.center)
         }
         .foregroundStyle(.white)
-        // Text over camera, with no panel: a soft shadow keeps it legible on any background.
-        .shadow(color: .black.opacity(0.8), radius: 10, y: 2)
-        .shadow(color: .black.opacity(0.5), radius: 2)
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(state.accessibilityLabel)

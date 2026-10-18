@@ -2,11 +2,9 @@
 //  EchoSurface.metal
 //  Echo
 //
-//  Surface shader for the LiDAR mesh. Each surface is a translucent fill, tinted by its
-//  class (the material's base colour tint), overlaid with a fine world-space grid that
-//  shows the surface's shape, and faded by horizontal distance from the user so only
-//  the nearby room is visible. A soft ring sweeps outward every couple of seconds so a
-//  still scene still reads as live.
+//  Surface shader for the LiDAR mesh. Each surface is a faint tinted fill (so the
+//  camera stays bright) with a fine world-space grid that shows its shape, faded by
+//  horizontal distance from the user so only the nearby room is drawn.
 //
 //  Everything is computed from RealityKit's own uniforms (view transform, time), so
 //  nothing on the CPU has to update as the user walks.
@@ -21,14 +19,11 @@ constant float kGridSpacing  = 0.25;   // metres between grid lines
 constant float kGridWidth    = 1.2;    // line width in pixels
 constant float kFullAlphaAt  = 2.2;    // metres: fully visible inside this
 constant float kFadedOutAt   = 4.0;    // metres: invisible beyond this
-constant float kRingPeriod   = 2.5;    // seconds per sweep
-constant float kRingSpeed    = 1.4;    // metres per second
 
 [[visible]]
 void echoSurface(realitykit::surface_parameters params)
 {
     float3 p    = params.geometry().world_position();
-    float  time = params.uniforms().time();
     float3 tint = params.material_constants().base_color_tint();
 
     // Camera position in world space, from the rigid world->view transform [R t]:
@@ -48,26 +43,11 @@ void echoSurface(realitykit::surface_parameters params)
     g = select(float3(1e9), g, fw > 1e-5);
     float line = 1.0 - smoothstep(0.0, kGridWidth, min(min(g.x, g.y), g.z));
 
-    // Outward sweep.
-    float ringRadius = fmod(time, kRingPeriod) * kRingSpeed;
-    float ring = exp(-pow((d - ringRadius) * 6.0, 2.0)) * 0.6;
+    // Light overlay: the fill is faint so the camera stays bright underneath; the grid
+    // carries the shape. Everything fades out with distance.
+    float alpha = fade * (0.22 + 0.55 * line);
 
-    float alpha = fade * (0.8 + 0.2 * line + 0.4 * ring);
-
-    // Highlight: the custom parameter is (target x, y, z, radius) with radius 0 when
-    // nothing is targeted. Surface within the radius of the target blends to red and
-    // brightens, so the thing the beeps are about is the thing that lights up.
-    float4 target = params.uniforms().custom_parameter();
-    float highlight = 0.0;
-    if (target.w > 0.0) {
-        float dt = distance(p, target.xyz);
-        highlight = 1.0 - smoothstep(target.w * 0.45, target.w, dt);
-    }
-    float3 red = float3(1.0, 0.22, 0.2);
-    float3 color = mix(tint, red, highlight);
-    alpha = max(alpha, highlight * 0.95);
-
-    params.surface().set_base_color(half3(color));
-    params.surface().set_emissive_color(half3(color) * half(0.35 * (line + ring) + 0.6 * highlight));
+    params.surface().set_base_color(half3(tint));
+    params.surface().set_emissive_color(half3(tint) * half(0.6 * line));
     params.surface().set_opacity(half(saturate(alpha)));
 }

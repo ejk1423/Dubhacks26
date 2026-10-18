@@ -64,8 +64,6 @@ nonisolated struct PerceptionConfig: Sendable {
     var maxAnchorUpdatesPerFrame: Int = 2      // mesh anchors converted per ARFrame (60 Hz)
     var maxUpsertsInFlight: Int = 3            // chunks queued on the store before ingestion waits
     var renderRadius: Float = 4.0              // mesh chunks farther than this are hidden (shader fades out by 4 m)
-    var highlightRange: Float = 1.6            // the corridor obstacle is lit red within this distance
-    var highlightRadius: Float = 0.45          // size of the red patch on it
     var hazardOverlayLift: Float = 0.015       // lift the red overlay above the mesh to avoid z-fighting
     var maxOverlayTriangles: Int = 20_000
 

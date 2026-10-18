@@ -11,7 +11,6 @@
 //                       buttons to one or two per view").
 //    * HUDControlBar    Repeat, Mute Beeps and Settings in one glass group, like a
 //                       bottom toolbar (HIG › Toolbars: one group, symbols, no borders).
-//    * StatusLine       a single quiet line at the top for anything that needs saying.
 //    * MinimapButton    the small map that opens the full one.
 //
 
@@ -94,52 +93,33 @@ struct HUDControlBar: View {
     }
 }
 
-// MARK: - Status line
-
-/// The one line the top of the HUD may show: a session problem, a missing sensor, or
-/// (in Detail mode) what the camera sees. Text-bearing, so it uses the regular glass
-/// variant (HIG › Materials: regular "when components have a significant amount of text").
-struct StatusLine: View {
-    let symbol: String
-    let text: String
-
-    var body: some View {
-        Label(text, systemImage: symbol)
-            .font(.subheadline)
-            .fontWeight(.semibold)
-            .foregroundStyle(.primary)
-            .lineLimit(2)
-            .padding(.horizontal, HUDMetrics.spacing)
-            .padding(.vertical, HUDMetrics.spacingSmall + 2)
-            .hudSurface(.regular, in: .capsule)
-            .accessibilityElement(children: .combine)
-    }
-}
-
 // MARK: - Minimap button
 
 struct MinimapButton: View {
     let snapshot: SceneSnapshot?
+    let vision: VisionReport?
     let radius: Float
     let coneHalfAngle: Float
     let alertRange: Float
     let action: () -> Void
 
-    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 156
+    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 176
 
     var body: some View {
         Button {
             Haptics.tap()
             action()
         } label: {
-            MinimapView(snapshot: snapshot, radius: radius, coneHalfAngle: coneHalfAngle, alertRange: alertRange)
-                .frame(width: min(size, 200), height: min(size, 200))
+            MinimapView(snapshot: snapshot, vision: vision, radius: radius,
+                        coneHalfAngle: coneHalfAngle, alertRange: alertRange)
+                .frame(width: min(size, 220), height: min(size, 220))
+                // A plain dark disc, not glass: the map is content, and it needs a
+                // steady background to be read at a glance.
+                .background(Color.black.opacity(0.6), in: .circle)
+                .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 1))
                 .contentShape(.circle)
         }
         .buttonStyle(.plain)
-        // The only custom glass control; interactive so it has a press state (HIG › Buttons:
-        // "Always include a press state for a custom button").
-        .hudSurface(.clear, in: .circle, interactive: true)
         .accessibilityLabel("Map of the room")
         .accessibilityHint("Opens the full map with distances in every direction")
     }

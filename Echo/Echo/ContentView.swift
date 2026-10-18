@@ -9,10 +9,11 @@
 //  One layout, built for low vision: big and simple, nothing in the way.
 //
 //    Scene     The obstacle the beeps are about is lit red on the LiDAR surfaces.
-//    Top       The map (leading) and, only when something is wrong, one status line.
-//    Bottom    The distance and state in giant type, the prominent Describe button,
-//              and one group of three glass buttons: Repeat, Mute Beeps, Settings.
-//              All in the bottom third, within thumb reach.
+//    Top       The map, top-leading, on a plain dark disc.
+//    Bottom    The distance and state in giant type (plus one line when something is
+//              wrong, e.g. no headphones), the prominent Describe button, and one group
+//              of three glass buttons: Repeat, Mute Beeps, Settings. All in the bottom
+//              third, within thumb reach.
 //
 //  Settings and the full map are sheets; the tutorial is a full-screen cover. Only
 //  one is shown at a time (HIG › Sheets): a request made from inside Settings is
@@ -138,21 +139,13 @@ struct ContentView: View {
     // MARK: Top
 
     @ViewBuilder private var topBar: some View {
-        HStack(alignment: .top, spacing: HUDMetrics.spacing) {
-            MinimapButton(snapshot: snapshot, radius: manager.config.mapRadius,
-                          coneHalfAngle: audio.coneHalfAngle, alertRange: audio.alertRange) {
-                showMap = true
-            }
-            if let line = statusLine {
-                StatusLine(symbol: line.symbol, text: line.text)
-                    .transition(.opacity)
-            }
-            Spacer(minLength: 0)
+        MinimapButton(snapshot: snapshot, vision: manager.visionReport, radius: manager.config.mapRadius,
+                      coneHalfAngle: audio.coneHalfAngle, alertRange: audio.alertRange) {
+            showMap = true
         }
         .padding(.horizontal, HUDMetrics.margin)
         .padding(.top, HUDMetrics.spacingSmall)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: statusLine?.text)
         // The HUD sits over camera content, so it keeps a dark appearance; the sheets
         // follow the system. Colours stay semantic so the swap is just the scheme.
         .environment(\.colorScheme, .dark)
@@ -165,6 +158,17 @@ struct ContentView: View {
         VStack(spacing: HUDMetrics.spacingLarge) {
             ProximityDisplay(state: state)
                 .accessibilitySortPriority(3)
+            if let line = statusLine {
+                Label(line.text, systemImage: line.symbol)
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .fontDesign(.rounded)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .transition(.opacity)
+                    .accessibilitySortPriority(2)
+            }
             DescribeButton(enabled: running) {
                 narrator.describe(snapshot: snapshot, vision: manager.visionReport)
             }
@@ -177,10 +181,12 @@ struct ContentView: View {
         .padding(.top, HUDMetrics.spacingLarge * 2)
         .padding(.bottom, HUDMetrics.spacingSmall)
         .frame(maxWidth: .infinity)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: statusLine?.text)
         // A standard scrim behind text over media, as Photos and video players do; it
         // dims only the bottom of the camera, never the room ahead.
         .background(
-            LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [.clear, .black.opacity(0.45), .black.opacity(0.82)],
+                           startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
         )

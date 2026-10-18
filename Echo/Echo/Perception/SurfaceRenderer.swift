@@ -25,11 +25,11 @@ final class SurfaceRenderer {
     // MARK: Palette
 
     enum Palette {
-        static let floor     = UIColor(red: 0.10, green: 0.45, blue: 0.28, alpha: 1)   // dim green: walkable, recedes
-        static let wall      = UIColor(red: 0.00, green: 0.90, blue: 1.00, alpha: 1)   // cyan
+        static let floor     = UIColor(red: 0.40, green: 0.95, blue: 0.65, alpha: 1)   // green: walkable
+        static let wall      = UIColor(red: 0.45, green: 0.90, blue: 1.00, alpha: 1)   // light cyan
         static let ceiling   = UIColor(red: 0.35, green: 0.45, blue: 1.00, alpha: 1)   // (not drawn)
-        static let furniture = UIColor(red: 1.00, green: 0.68, blue: 0.20, alpha: 1)   // amber: obstacles
-        static let unknown   = UIColor(red: 0.45, green: 0.50, blue: 0.60, alpha: 1)   // grey
+        static let furniture = UIColor(red: 1.00, green: 0.78, blue: 0.40, alpha: 1)   // warm amber: obstacles
+        static let unknown   = UIColor(red: 0.85, green: 0.88, blue: 0.95, alpha: 1)   // near white
         static let hazard    = UIColor(red: 1.00, green: 0.16, blue: 0.16, alpha: 1)   // red
 
         static func color(for bucket: SurfaceBucket) -> UIColor {
@@ -55,8 +55,6 @@ final class SurfaceRenderer {
     private var sequences: [UUID: UInt64] = [:]
     private var centers: [UUID: SIMD3<Float>] = [:]
     private var bucketMaterials: [SurfaceBucket: any Material] = [:]
-    private var bucketsByEntity: [UUID: [SurfaceBucket]] = [:]
-    private var highlightTarget: SIMD4<Float> = .zero
 
     private let hazardFill: ModelEntity
     private let hazardFillMaterial: UnlitMaterial
@@ -74,7 +72,7 @@ final class SurfaceRenderer {
             bucketMaterials[bucket] = Self.makeSurfaceMaterial(Palette.color(for: bucket), shader: shader)
         }
 
-        hazardFillMaterial = Self.makeFlatMaterial(Palette.hazard, opacity: 0.35)
+        hazardFillMaterial = Self.makeFlatMaterial(Palette.hazard, opacity: 0.22)
         hazardFill = ModelEntity()
         hazardFill.name = "echo.hazard.fill"
         hazardFill.isEnabled = false
@@ -126,7 +124,6 @@ final class SurfaceRenderer {
             meshEntities[data.anchorID] = entity
         }
         entity.model = ModelComponent(mesh: mesh, materials: materials)
-        bucketsByEntity[data.anchorID] = data.buckets
         entity.transform = Transform(matrix: data.transform)
     }
 
@@ -136,7 +133,6 @@ final class SurfaceRenderer {
         }
         sequences[anchorID] = nil
         centers[anchorID] = nil
-        bucketsByEntity[anchorID] = nil
     }
 
     func removeAll() {
@@ -144,30 +140,11 @@ final class SurfaceRenderer {
         meshEntities.removeAll()
         sequences.removeAll()
         centers.removeAll()
-        bucketsByEntity.removeAll()
         hazardFill.isEnabled = false
     }
 
     /// Hides chunks far from the user so a long walk does not accumulate draw calls.
     /// (The shader has already faded them out by then.)
-    /// Lights up the surface around `point` (world space) in red: the obstacle the beeps
-    /// are about. `radius` 0 or nil clears it. Materials are shared per bucket, so one
-    /// parameter change and a re-assignment per entity updates the whole scene.
-    func highlight(point: SIMD3<Float>?, radius: Float) {
-        let target = point.map { SIMD4($0.x, $0.y, $0.z, radius) } ?? .zero
-        guard target != highlightTarget else { return }
-        highlightTarget = target
-        for bucket in SurfaceBucket.allCases {
-            guard var material = bucketMaterials[bucket] as? CustomMaterial else { continue }
-            material.custom.value = target
-            bucketMaterials[bucket] = material
-        }
-        for (id, entity) in meshEntities {
-            guard let buckets = bucketsByEntity[id] else { continue }
-            entity.model?.materials = buckets.compactMap { bucketMaterials[$0] }
-        }
-    }
-
     func cull(around cameraPosition: SIMD3<Float>, radius: Float) {
         let limit = radius + 2.0   // chunks are ~1-2 m wide
         for (id, entity) in meshEntities {
