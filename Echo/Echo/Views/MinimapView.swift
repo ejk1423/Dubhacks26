@@ -12,7 +12,8 @@
 //       when they are walking toward the user),
 //    5. the alert cone, the current target, metre rings with labels, the user chevron
 //       and the "ahead" marker.
-//  The map turns with the user: up is always the way they are facing.
+//  The map stays put (world-fixed, so it never spins); the user's chevron, cone, sonar
+//  arcs and the camera's detections turn with the heading instead.
 //
 
 import SwiftUI
@@ -35,67 +36,70 @@ struct MinimapView: View {
     var body: some View {
         Canvas { context, size in
             let centre = CGPoint(x: size.width / 2, y: size.height / 2)
-            let inset: CGFloat = detailed ? 24 : 10
+            let inset: CGFloat = detailed ? 24 : 8
             let r = min(size.width, size.height) / 2 - inset
             let scale = r / CGFloat(max(radius, 0.1))
-            let disc = Path(ellipseIn: CGRect(x: centre.x - r, y: centre.y - r, width: 2 * r, height: 2 * r))
             let s: CGFloat = detailed ? 1.8 : 1
 
-            var clipped = context
-            clipped.clip(to: disc)
+            guard let snap = snapshot else { return }
+            // Screen angle of the heading (world x -> screen x, world z -> screen y).
+            let headingAngle = atan2(Double(snap.heading.z), Double(snap.heading.x))
 
-            if let snap = snapshot {
-                drawWorld(snap, in: clipped, centre: centre, scale: scale, mark: s)
-                drawSonar(snap, in: clipped, centre: centre, scale: scale)
-                drawPeople(in: clipped, centre: centre, scale: scale, mark: s)
-            }
+            // World layer: fixed.
+            drawWorld(snap, in: context, centre: centre, scale: scale, mark: s)
 
-            // Rings, labels, user chevron and the ahead marker stay unrotated.
+            // Metre rings, fixed.
             for metres in stride(from: 1, through: Int(radius), by: 1) {
                 let rr = CGFloat(metres) * scale
                 context.stroke(Path(ellipseIn: CGRect(x: centre.x - rr, y: centre.y - rr, width: 2 * rr, height: 2 * rr)),
-                               with: .color(.white.opacity(0.18)), lineWidth: 1)
-                context.draw(Text("\(metres) m").font(detailed ? .caption : .system(size: 9, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.6)),
-                             at: CGPoint(x: centre.x + 3, y: centre.y - rr + 2), anchor: .topLeading)
+                               with: .color(.white.opacity(0.16)), lineWidth: 1)
+                if detailed {
+                    context.draw(Text("\(metres) m").font(.caption).foregroundStyle(.white.opacity(0.6)),
+                                 at: CGPoint(x: centre.x + rr - 3, y: centre.y + 3), anchor: .topTrailing)
+                }
             }
 
-            let user = Path { p in
-                p.move(to: CGPoint(x: centre.x, y: centre.y - 9 * s))
-                p.addLine(to: CGPoint(x: centre.x - 6 * s, y: centre.y + 5.5 * s))
-                p.addLine(to: CGPoint(x: centre.x, y: centre.y + 2.5 * s))
-                p.addLine(to: CGPoint(x: centre.x + 6 * s, y: centre.y + 5.5 * s))
-                p.closeSubpath()
-            }
-            context.fill(user, with: .color(.white))
+            // User layer: turns with the heading. Drawn with "up" = heading, then rotated.
+            var user = context
+            user.translateBy(x: centre.x, y: centre.y)
+            user.rotate(by: Angle(radians: headingAngle + .pi / 2))
+            drawCone(in: user, scale: scale)
+            drawSonar(snap, in: user, scale: scale)
+            drawPeople(in: user, scale: scale, mark: s)
 
-            let tip = CGPoint(x: centre.x, y: centre.y - r)
-            let marker = Path { p in
-                p.move(to: CGPoint(x: tip.x, y: tip.y + 1))
-                p.addLine(to: CGPoint(x: tip.x - 5 * s, y: tip.y + 8 * s))
-                p.addLine(to: CGPoint(x: tip.x + 5 * s, y: tip.y + 8 * s))
+            let chevron = Path { p in
+                p.move(to: CGPoint(x: 0, y: -10 * s))
+                p.addLine(to: CGPoint(x: -6.5 * s, y: 6 * s))
+                p.addLine(to: CGPoint(x: 0, y: 2.5 * s))
+                p.addLine(to: CGPoint(x: 6.5 * s, y: 6 * s))
                 p.closeSubpath()
             }
-            context.fill(marker, with: .color(.accentColor))
-            if detailed {
-                context.draw(Text("Ahead").font(.caption.weight(.semibold)).foregroundStyle(.tint),
-                             at: CGPoint(x: tip.x, y: tip.y - 4), anchor: .bottom)
-                context.draw(Text("L").font(.caption.weight(.semibold)).foregroundStyle(.secondary),
-                             at: CGPoint(x: centre.x - r - 6, y: centre.y), anchor: .trailing)
-                context.draw(Text("R").font(.caption.weight(.semibold)).foregroundStyle(.secondary),
-                             at: CGPoint(x: centre.x + r + 6, y: centre.y), anchor: .leading)
-            }
+            user.fill(chevron, with: .color(.white))
+            user.stroke(chevron, with: .color(.black.opacity(0.7)), lineWidth: 1)
         }
         .accessibilityHidden(true)
     }
 
-    // MARK: World-frame layers (rotated so the heading points up)
+    /// The alert cone in the user frame (up = heading).
+    private func drawCone(in context: GraphicsContext, scale: CGFloat) {
+        let coneR = CGFloat(alertRange) * scale
+        let cone = Path { p in
+            p.move(to: .zero)
+            p.addArc(center: .zero, radius: coneR,
+                     startAngle: .radians(-.pi / 2 - Double(coneHalfAngle)),
+                     endAngle: .radians(-.pi / 2 + Double(coneHalfAngle)), clockwise: false)
+            p.closeSubpath()
+        }
+        context.fill(cone, with: .color(.accentColor.opacity(0.16)))
+        context.stroke(cone, with: .color(.accentColor.opacity(0.6)), lineWidth: 1)
+    }
+
+    // MARK: World layer (fixed)
 
     private func drawWorld(_ snap: SceneSnapshot, in context: GraphicsContext, centre: CGPoint, scale: CGFloat, mark s: CGFloat) {
         let p0 = snap.cameraPosition
         var world = context
         world.translateBy(x: centre.x, y: centre.y)
-        world.rotate(by: Angle(radians: -.pi / 2 - atan2(Double(snap.heading.z), Double(snap.heading.x))))
         func point(_ x: Float, _ z: Float) -> CGPoint {
             CGPoint(x: CGFloat(x - p0.x) * scale, y: CGFloat(z - p0.z) * scale)
         }
@@ -136,18 +140,7 @@ struct MinimapView: View {
             world.stroke(triangle, with: .color(.black.opacity(0.6)), lineWidth: 1)
         }
 
-        // 5. Alert cone and the current target.
-        let coneR = CGFloat(alertRange) * scale
-        let cone = Path { p in
-            p.move(to: .zero)
-            p.addArc(center: .zero, radius: coneR,
-                     startAngle: .radians(-.pi / 2 - Double(coneHalfAngle)),
-                     endAngle: .radians(-.pi / 2 + Double(coneHalfAngle)), clockwise: false)
-            p.closeSubpath()
-        }
-        world.fill(cone, with: .color(.accentColor.opacity(0.14)))
-        world.stroke(cone, with: .color(.accentColor.opacity(0.55)), lineWidth: 1)
-
+        // 5. The current target.
         if let hit = snap.nearestForwardObstacle {
             let p = point(hit.point.x, hit.point.z)
             let d: CGFloat = detailed ? 7 : 5
@@ -157,12 +150,11 @@ struct MinimapView: View {
         }
     }
 
-    /// Nearest surface per 15-degree sector as an arc: the parking-sensor picture.
-    private func drawSonar(_ snap: SceneSnapshot, in context: GraphicsContext, centre: CGPoint, scale: CGFloat) {
+    /// Nearest surface per 15-degree sector as an arc (user frame, up = heading).
+    private func drawSonar(_ snap: SceneSnapshot, in context: GraphicsContext, scale: CGFloat) {
         let sectors = snap.fineSectorHits
         guard !sectors.isEmpty else { return }
-        var sonar = context
-        sonar.translateBy(x: centre.x, y: centre.y)
+        let sonar = context
         let step = 2 * Double.pi / Double(sectors.count)
         let gap = 0.03
         for (index, hit) in sectors.enumerated() {
@@ -179,14 +171,14 @@ struct MinimapView: View {
         }
     }
 
-    /// People and animals from the camera, placed by bearing and distance (heading-up
-    /// frame, so no rotation needed). Filled when walking toward the user.
-    private func drawPeople(in context: GraphicsContext, centre: CGPoint, scale: CGFloat, mark s: CGFloat) {
+    /// People and animals from the camera, placed by bearing and distance in the user
+    /// frame (up = heading). Filled when walking toward the user.
+    private func drawPeople(in context: GraphicsContext, scale: CGFloat, mark s: CGFloat) {
         guard let vision, ProcessInfo.processInfo.systemUptime - vision.timestamp < 1.5 else { return }
         for detection in vision.detections {
             guard let distance = detection.distance, distance <= radius else { continue }
-            let p = CGPoint(x: centre.x + CGFloat(distance * sin(detection.bearing)) * scale,
-                            y: centre.y - CGFloat(distance * cos(detection.bearing)) * scale)
+            let p = CGPoint(x: CGFloat(distance * sin(detection.bearing)) * scale,
+                            y: -CGFloat(distance * cos(detection.bearing)) * scale)
             let d: CGFloat = 6 * s
             let dot = Path(ellipseIn: CGRect(x: p.x - d, y: p.y - d, width: 2 * d, height: 2 * d))
             if detection.movingTowardYou {
@@ -285,14 +277,14 @@ struct MapView: View {
                                 alertRange: audio.alertRange, detailed: true)
                         .aspectRatio(1, contentMode: .fit)
                         .frame(maxWidth: 420)
-                        .background(Color.black.opacity(0.85), in: .circle)
+                        .background(Color.black.opacity(0.85), in: .rect(cornerRadius: HUDMetrics.spacingLarge, style: .continuous))
                         .environment(\.colorScheme, .dark)
 
                     MinimapLegend()
 
                     readings
 
-                    Text("The map turns with you: up is always the way you are facing. Arcs are the nearest surface in each direction, white bars are doorways, triangles are steps, teal dots are people, and the blue cone is where the beeps listen.")
+                    Text("The map stays put and your arrow turns. Arcs are the nearest surface in each direction, white bars are doorways, triangles are steps, teal dots are people, and the blue cone is where the beeps listen.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

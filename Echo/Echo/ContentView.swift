@@ -9,10 +9,10 @@
 //  One layout, built for low vision: big and simple, nothing in the way.
 //
 //    Scene     The obstacle the beeps are about is lit red on the LiDAR surfaces.
-//    Top       The map, top-leading, on a plain dark disc.
-//    Bottom    The distance and state in giant type (plus one line when something is
-//              wrong, e.g. no headphones), the prominent Describe button, and one group
-//              of three glass buttons: Repeat, Mute Beeps, Settings. All in the bottom
+//    Top       The map as a floating panel in the top-right corner; a small note in the
+//              top-left only when something is wrong (no headphones, finding the floor).
+//    Bottom    The distance and state in giant type, then one row: the prominent
+//              Describe button with Repeat, Mute Beeps and Settings. All in the bottom
 //              third, within thumb reach.
 //
 //  Settings and the full map are sheets; the tutorial is a full-screen cover. Only
@@ -41,7 +41,8 @@ struct ContentView: View {
     var body: some View {
         ARWireframeView(manager: manager)
             .ignoresSafeArea()
-            .overlay(alignment: .top) { topBar }
+            .overlay(alignment: .topTrailing) { mapPanel }
+            .overlay(alignment: .topLeading) { problemNote }
             .overlay(alignment: .bottom) { bottomColumn }
             .sheet(isPresented: $showSettings, onDismiss: runFollowUp) {
                 SettingsView(audio: audio, narrator: narrator, prefs: prefs, manager: manager,
@@ -138,18 +139,38 @@ struct ContentView: View {
 
     // MARK: Top
 
-    @ViewBuilder private var topBar: some View {
-        MinimapButton(snapshot: snapshot, vision: manager.visionReport, radius: manager.config.mapRadius,
-                      coneHalfAngle: audio.coneHalfAngle, alertRange: audio.alertRange) {
+    @ViewBuilder private var mapPanel: some View {
+        MapPanel(snapshot: snapshot, vision: manager.visionReport, radius: manager.config.mapRadius,
+                 coneHalfAngle: audio.coneHalfAngle, alertRange: audio.alertRange) {
             showMap = true
         }
-        .padding(.horizontal, HUDMetrics.margin)
+        .padding(.trailing, HUDMetrics.margin)
         .padding(.top, HUDMetrics.spacingSmall)
-        .frame(maxWidth: .infinity, alignment: .leading)
         // The HUD sits over camera content, so it keeps a dark appearance; the sheets
         // follow the system. Colours stay semantic so the swap is just the scheme.
         .environment(\.colorScheme, .dark)
         .accessibilitySortPriority(0)
+    }
+
+    /// A small note for problems, out of the way in the top-left.
+    @ViewBuilder private var problemNote: some View {
+        if let line = statusLine {
+            Label(line.text, systemImage: line.symbol)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+                .fontDesign(.rounded)
+                .foregroundStyle(.white)
+                .padding(.horizontal, HUDMetrics.spacingSmall + 2)
+                .padding(.vertical, 6)
+                .background(Color.black.opacity(0.5), in: .capsule)
+                .lineLimit(2)
+                .frame(maxWidth: 170, alignment: .leading)
+                .padding(.leading, HUDMetrics.margin)
+                .padding(.top, HUDMetrics.spacingSmall)
+                .transition(.opacity)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: line.text)
+                .environment(\.colorScheme, .dark)
+        }
     }
 
     // MARK: Bottom
@@ -158,30 +179,17 @@ struct ContentView: View {
         VStack(spacing: HUDMetrics.spacingLarge) {
             ProximityDisplay(state: state)
                 .accessibilitySortPriority(3)
-            if let line = statusLine {
-                Label(line.text, systemImage: line.symbol)
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .fontDesign(.rounded)
-                    .foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
-                    .transition(.opacity)
-                    .accessibilitySortPriority(2)
-            }
-            DescribeButton(enabled: running) {
-                narrator.describe(snapshot: snapshot, vision: manager.visionReport)
-            }
-            .accessibilitySortPriority(2)
-            HUDControlBar(audio: audio, onRepeat: { narrator.repeatLast() }, onSettings: { showSettings = true })
-                .accessibilitySortPriority(1)
+            HUDControlBar(audio: audio, describeEnabled: running,
+                          onDescribe: { narrator.describe(snapshot: snapshot, vision: manager.visionReport) },
+                          onRepeat: { narrator.repeatLast() },
+                          onSettings: { showSettings = true })
+                .accessibilitySortPriority(2)
         }
         .frame(maxWidth: HUDMetrics.maxColumnWidth)
         .padding(.horizontal, HUDMetrics.margin)
         .padding(.top, HUDMetrics.spacingLarge * 2)
         .padding(.bottom, HUDMetrics.spacingSmall)
         .frame(maxWidth: .infinity)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: statusLine?.text)
         // A standard scrim behind text over media, as Photos and video players do; it
         // dims only the bottom of the camera, never the room ahead.
         .background(

@@ -69,7 +69,7 @@ nonisolated private final class SpeechDelegate: NSObject, AVSpeechSynthesizerDel
 final class Narrator {
 
     var isEnabled = true
-    var verbosity: NarrationVerbosity = .normal
+    var verbosity: NarrationVerbosity = .quiet
     /// Play the two-tone chime before hazard lines (needs a running `SpatialAudioEngine`).
     var earconsEnabled = true
     /// Words per minute-ish: `AVSpeechUtterance.rate`, 0...1.

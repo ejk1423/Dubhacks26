@@ -30,6 +30,7 @@ struct DescribeButton: View {
             Label("Describe", systemImage: "text.bubble.fill")
                 .fontWeight(.semibold)
                 .frame(maxWidth: .infinity)
+                .frame(minWidth: 120)
         }
         // The accent-tinted glass marks this as the primary action (HIG › Color, Liquid
         // Glass: "apply color to the background rather than to symbols or text").
@@ -45,6 +46,8 @@ struct DescribeButton: View {
 
 struct HUDControlBar: View {
     @Bindable var audio: SpatialAudioEngine
+    let describeEnabled: Bool
+    let onDescribe: () -> Void
     let onRepeat: () -> Void
     let onSettings: () -> Void
 
@@ -59,12 +62,18 @@ struct HUDControlBar: View {
         // One container so the three glass circles read as a single group.
         HUDGlassGroup {
             HStack(spacing: HUDMetrics.spacingSmall) {
+                DescribeButton(enabled: describeEnabled, action: onDescribe)
+                    .layoutPriority(1)
+
                 Button {
                     Haptics.tap()
                     onRepeat()
                 } label: {
                     Label("Repeat", systemImage: "repeat")
                 }
+                .labelStyle(.iconOnly)
+                .hudButtonStyle()
+                .buttonBorderShape(.circle)
                 .accessibilityHint("Says the last spoken line again")
 
                 // HIG › Toggles: "Outside of a list, use a button that behaves like a toggle,
@@ -74,6 +83,9 @@ struct HUDControlBar: View {
                         .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 }
                 .toggleStyle(.button)
+                .labelStyle(.iconOnly)
+                .hudButtonStyle()
+                .buttonBorderShape(.circle)
                 .accessibilityHint("Silences the collision beeps")
 
                 Button {
@@ -82,20 +94,22 @@ struct HUDControlBar: View {
                 } label: {
                     Label("Settings", systemImage: "gearshape")
                 }
+                .labelStyle(.iconOnly)
+                .hudButtonStyle()
+                .buttonBorderShape(.circle)
                 .accessibilityHint("Sound, voice, display, map and help")
             }
-            .labelStyle(.iconOnly)
-            .hudButtonStyle()
-            .buttonBorderShape(.circle)
-            .controlSize(.extraLarge)
             .fontWeight(.semibold)
+            .controlSize(.extraLarge)
         }
     }
 }
 
-// MARK: - Minimap button
+// MARK: - Map panel
 
-struct MinimapButton: View {
+/// The map as a floating panel in the top-right corner: a plain dark rounded rectangle,
+/// not glass, so the drawing has a steady background. Tapping opens the full map.
+struct MapPanel: View {
     let snapshot: SceneSnapshot?
     let vision: VisionReport?
     let radius: Float
@@ -103,7 +117,7 @@ struct MinimapButton: View {
     let alertRange: Float
     let action: () -> Void
 
-    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 176
+    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 208
 
     var body: some View {
         Button {
@@ -112,12 +126,11 @@ struct MinimapButton: View {
         } label: {
             MinimapView(snapshot: snapshot, vision: vision, radius: radius,
                         coneHalfAngle: coneHalfAngle, alertRange: alertRange)
-                .frame(width: min(size, 220), height: min(size, 220))
-                // A plain dark disc, not glass: the map is content, and it needs a
-                // steady background to be read at a glance.
-                .background(Color.black.opacity(0.6), in: .circle)
-                .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 1))
-                .contentShape(.circle)
+                .frame(width: min(size, 260), height: min(size, 260))
+                .background(Color.black.opacity(0.62), in: .rect(cornerRadius: HUDMetrics.spacingLarge, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: HUDMetrics.spacingLarge, style: .continuous)
+                    .strokeBorder(.white.opacity(0.25), lineWidth: 1))
+                .contentShape(.rect(cornerRadius: HUDMetrics.spacingLarge, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Map of the room")
