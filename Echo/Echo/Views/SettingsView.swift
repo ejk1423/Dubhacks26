@@ -53,9 +53,21 @@ struct SettingsView: View {
                     .accessibilityValue("\(Int((audio.masterVolume * 100).rounded())) percent")
                 Image(systemName: "speaker.wave.3.fill").foregroundStyle(.secondary)
             }
-            Toggle(isOn: Binding(get: { !audio.isMuted }, set: { audio.isMuted = !$0 })) {
-                Label("Beeps", systemImage: "dot.radiowaves.left.and.right")
+            Picker(selection: Binding(
+                get: { audio.isMuted ? 2 : (audio.hapticsOnly ? 1 : 0) },
+                set: { choice in
+                    audio.isMuted = choice == 2
+                    audio.hapticsOnly = choice == 1
+                    if choice == 1 { audio.hapticsEnabled = true }
+                    Haptics.select()
+                })) {
+                Text("Beeps").tag(0)
+                Text("Haptics only").tag(1)
+                Text("Off").tag(2)
+            } label: {
+                Label("Collision warning", systemImage: "dot.radiowaves.left.and.right")
             }
+            .pickerStyle(.segmented)
             Toggle(isOn: $narrator.isEnabled) {
                 Label("Voice", systemImage: "waveform")
             }
@@ -68,7 +80,7 @@ struct SettingsView: View {
         } header: {
             Text("Sound")
         } footer: {
-            Text("Beeps warn about whatever is in the cone ahead, earlier when you walk faster. The voice names people, steps, objects and signs as you are about to reach them. Haptic ticks mirror the beeps in your hand.")
+            Text("Warnings only come when you are about 1.3 seconds from hitting what is ahead, or already within arm's reach. Standing still or walking past is silent. Haptics only keeps the ticks in your hand and drops the sound.")
         }
         .onChange(of: audio.isMuted) { Haptics.select() }
         .onChange(of: narrator.isEnabled) { Haptics.select() }

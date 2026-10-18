@@ -40,6 +40,7 @@ final class HUDPreferences {
         static let beeps = "echo.beeps"
         static let voice = "echo.voice"
         static let haptics = "echo.haptics"
+        static let hapticsOnly = "echo.hapticsOnly"
         static let volume = "echo.volume"
     }
 
@@ -50,6 +51,8 @@ final class HUDPreferences {
     var beeps: Bool { didSet { defaults.set(beeps, forKey: Key.beeps) } }
     var voice: Bool { didSet { defaults.set(voice, forKey: Key.voice) } }
     var haptics: Bool { didSet { defaults.set(haptics, forKey: Key.haptics) } }
+    /// Haptic ticks instead of beeps.
+    var hapticsOnly: Bool { didSet { defaults.set(hapticsOnly, forKey: Key.hapticsOnly) } }
     var volume: Float { didSet { defaults.set(volume, forKey: Key.volume) } }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -62,6 +65,7 @@ final class HUDPreferences {
         beeps = defaults.object(forKey: Key.beeps) as? Bool ?? true
         voice = defaults.object(forKey: Key.voice) as? Bool ?? true
         haptics = defaults.object(forKey: Key.haptics) as? Bool ?? true
+        hapticsOnly = defaults.bool(forKey: Key.hapticsOnly)
         volume = defaults.object(forKey: Key.volume) as? Float ?? 0.8
     }
 }

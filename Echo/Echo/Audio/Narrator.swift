@@ -97,6 +97,7 @@ final class Narrator {
     @ObservationIgnored private var voice: AVSpeechSynthesisVoice?
     @ObservationIgnored private var lastSpoken: [String: TimeInterval] = [:]
     @ObservationIgnored private var delegate: SpeechDelegate?
+    @ObservationIgnored private var lastSpokenText: String?
 
     // Context state
     @ObservationIgnored private var blockedSince: TimeInterval?
@@ -492,6 +493,15 @@ final class Narrator {
         speak(text, interrupt: true)
     }
 
+    /// Say the most recent line again (a missed warning, a half-heard name).
+    func repeatLast() {
+        guard let text = lastSpokenText else {
+            speak("Nothing to repeat yet.", interrupt: true)
+            return
+        }
+        speak(text, interrupt: true)
+    }
+
     func stopSpeaking() {
         if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
     }
@@ -659,6 +669,7 @@ final class Narrator {
         }
         synthesizer.speak(utterance)
         lastLine = text
+        lastSpokenText = text
         lastLineTime = ProcessInfo.processInfo.systemUptime
         isSpeaking = true
     }

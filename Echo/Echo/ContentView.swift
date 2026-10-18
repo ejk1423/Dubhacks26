@@ -67,6 +67,7 @@ struct ContentView: View {
             .onChange(of: audio.isMuted) { prefs.beeps = !audio.isMuted }
             .onChange(of: audio.masterVolume) { prefs.volume = audio.masterVolume }
             .onChange(of: audio.hapticsEnabled) { prefs.haptics = audio.hapticsEnabled }
+            .onChange(of: audio.hapticsOnly) { prefs.hapticsOnly = audio.hapticsOnly }
             .onChange(of: narrator.isEnabled) { prefs.voice = narrator.isEnabled }
             .onChange(of: prefs.cameraFeed) { manager.setCameraFeed(prefs.cameraFeed.mode) }
             .preferredColorScheme(.dark)
@@ -85,6 +86,7 @@ struct ContentView: View {
         audio.isMuted = !prefs.beeps
         audio.masterVolume = prefs.volume
         audio.hapticsEnabled = prefs.haptics
+        audio.hapticsOnly = prefs.hapticsOnly
         narrator.isEnabled = prefs.voice
         manager.setCameraFeed(prefs.cameraFeed.mode)
         manager.start()
@@ -230,9 +232,9 @@ struct ContentView: View {
             }
             HStack(spacing: 8) {
                 DescribeButton(enabled: running, large: false) { describe() }
-                IconButton(symbol: "location.fill", label: "Where am I",
-                           hint: "Speaks the kind of place, its width, open sides and the last sign") {
-                    narrator.whereAmI(snapshot: snapshot, vision: manager.visionReport)
+                IconButton(symbol: "arrow.counterclockwise.circle.fill", label: "Repeat",
+                           hint: "Says the last spoken line again") {
+                    narrator.repeatLast()
                 }
                 IconButton(symbol: audio.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
                            label: audio.isMuted ? "Beeps off" : "Beeps on", hint: "Toggles the collision beeps",
