@@ -87,8 +87,8 @@ struct ProximityEdge: View {
 
     var body: some View {
         RoundedRectangle(cornerRadius: 58, style: .continuous)
-            .strokeBorder(state.color, lineWidth: reduceTransparency ? 10 : 22 + 26 * strength)
-            .blur(radius: reduceTransparency ? 0 : 18)
+            .strokeBorder(state.color, lineWidth: reduceTransparency ? 8 : 10 + 16 * strength)
+            .blur(radius: reduceTransparency ? 0 : 12)
             .opacity(strength)
             .ignoresSafeArea()
             .allowsHitTesting(false)
