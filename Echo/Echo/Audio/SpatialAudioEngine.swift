@@ -73,10 +73,9 @@ final class SpatialAudioEngine {
     @ObservationIgnored let closingSpeedThreshold: Float = 0.15 // m/s toward the target before beeping
     @ObservationIgnored let touchDistance: Float = 0.3          // metres; solid tone at or inside
     @ObservationIgnored let coneHalfAngle: Float = 40 * .pi / 180
-    @ObservationIgnored let slowestInterval: TimeInterval = 1.6
-    @ObservationIgnored let fastestInterval: TimeInterval = 0.28
-    @ObservationIgnored let contactCloseness: Float = 0.82      // from here on: the double-beep alert
-    @ObservationIgnored let contactInterval: TimeInterval = 0.5
+    @ObservationIgnored let slowestInterval: TimeInterval = 1.4
+    @ObservationIgnored let fastestInterval: TimeInterval = 0.2
+    @ObservationIgnored let contactCloseness: Float = 0.9       // from here on the beeps run together into a tone
 
     @ObservationIgnored let blockedCloseness: Float = 0.35      // closeness that counts as "blocked" for the clear tick
     @ObservationIgnored let blockedHold: TimeInterval = 0.4     // seconds blocked before clearing earns a tick
@@ -333,15 +332,15 @@ final class SpatialAudioEngine {
         let closingIn = closingSpeed >= closingSpeedThreshold && distance / closingSpeed <= leadTime
         guard imminent || closingIn else { return }
 
-        // Beep rate and loudness rise toward the end, but never into a buzz: inside
-        // `contactCloseness` the cue changes character instead, to a loud double beep every
-        // half second, so "about to hit" has its own sound.
+        // One stream of beeps, closer together and louder as the target nears; inside
+        // `contactCloseness` each beep lasts the whole interval, so they run together into
+        // a continuous tone at the same pitch, as a parking sensor does at the bumper.
         let far = 1 - c
         let contact = c >= contactCloseness
-        let interval = contact ? contactInterval : fastestInterval + (slowestInterval - fastestInterval) * Double(far * far)
+        let interval = fastestInterval + (slowestInterval - fastestInterval) * Double(far * far)
         guard now - lastBeep >= interval, now >= beepsHeldUntil else { return }
         lastBeep = now
-        if hapticsEnabled { haptic.impactOccurred(intensity: CGFloat(contact ? 1 : 0.3 + 0.7 * c)) }
+        if hapticsEnabled { haptic.impactOccurred(intensity: CGFloat(0.3 + 0.7 * c)) }
         guard !isMuted, !hapticsOnly else { return }
 
         // One pitch throughout: urgency is carried by rate and loudness, never by a climbing
@@ -349,12 +348,8 @@ final class SpatialAudioEngine {
         // different from things at body height.
         let overhead = snap.nearestOverheadObstacle.map { abs($0.horizontalDistance - rawDistance) < 0.2 } ?? false
         let frequency = 520.0 * (overhead ? 1.5 : 1)
-        var beep = Self.beep(rate: stereo.sampleRate, frequency: frequency, duration: 0.045)
-        if contact {
-            beep += [Float](repeating: 0, count: Int(0.07 * stereo.sampleRate))
-                + Self.beep(rate: stereo.sampleRate, frequency: frequency, duration: 0.045)
-        }
-        let gain = (contact ? 0.9 : 0.10 + 0.55 * c * c) * (ducked ? 0.4 : 1)
+        let beep = Self.beep(rate: stereo.sampleRate, frequency: frequency, duration: contact ? interval + 0.01 : 0.045)
+        let gain = (0.10 + 0.7 * c * c) * (ducked ? 0.4 : 1)
         // Pan for where the obstacle will be when the sound comes out, not where it was.
         let predicted = max(0.1, distance - closingSpeed * renderLatency)
         let bearingAtPlay = atan2(sin(bearingNow) * distance, max(0.05, cos(bearingNow) * distance - (distance - predicted)))

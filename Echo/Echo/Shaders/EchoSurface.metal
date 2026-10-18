@@ -16,8 +16,8 @@
 
 using namespace metal;
 
-constant float kGridSpacing  = 0.25;   // metres between grid lines
-constant float kGridWidth    = 1.2;    // line width in pixels
+constant float kGridSpacing  = 0.2;    // metres between grid lines
+constant float kGridWidth    = 1.5;    // line width in pixels
 constant float kFullAlphaAt  = 2.2;    // metres: fully visible inside this
 constant float kFadedOutAt   = 4.0;    // metres: invisible beyond this
 
@@ -50,9 +50,11 @@ void echoSurface(realitykit::surface_parameters params)
     // strong, so colour is spent where it matters.
     float strength = params.uniforms().custom_parameter().x;
     if (strength <= 0.0) { strength = 0.5; }
-    float alpha = fade * strength * (0.55 + 0.45 * line);
+    // Visibility comes from the glowing grid, not from a dense fill, so the camera stays
+    // bright between the lines.
+    float alpha = fade * (strength * 0.5 + (0.45 + strength * 0.5) * line);
 
     params.surface().set_base_color(half3(tint));
-    params.surface().set_emissive_color(half3(tint) * half(0.15 + 0.5 * line));
+    params.surface().set_emissive_color(half3(tint) * half(0.1 + 0.9 * line));
     params.surface().set_opacity(half(saturate(alpha)));
 }

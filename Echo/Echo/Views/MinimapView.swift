@@ -111,8 +111,20 @@ struct MinimapView: View {
         let map = snap.map
         if let image = cache.image(for: map, timestamp: snap.timestamp, palette: .dark) {
             let side = CGFloat(map.size) * CGFloat(map.cellSize) * scale
-            world.draw(image.interpolation(.medium),
+            world.draw(image.interpolation(.none),
                        in: CGRect(origin: point(map.origin.x, map.origin.y), size: CGSize(width: side, height: side)))
+        }
+
+        // 2. Walls as lines: neighbouring wall cells joined, so a straight wall is a straight
+        // stroke rather than a row of dots.
+        if !cache.wallSegments.isEmpty {
+            let lines = Path { path in
+                for segment in cache.wallSegments {
+                    path.move(to: point(segment.a.x, segment.a.y))
+                    path.addLine(to: point(segment.b.x, segment.b.y))
+                }
+            }
+            world.stroke(lines, with: .color(.white), style: StrokeStyle(lineWidth: 2.2 * s, lineCap: .round, lineJoin: .round))
         }
 
         // 3. Doorways: a bright chord across the gap, perpendicular to the line of sight.
@@ -210,7 +222,7 @@ nonisolated struct MinimapPalette: Equatable, Sendable {
     var live: SIMD4<UInt8>
 
     static let dark = MinimapPalette(
-        floor: [64, 64, 64, 64], wall: [250, 250, 250, 250], furniture: [200, 200, 200, 200],
+        floor: [64, 64, 64, 64], wall: [180, 180, 180, 180], furniture: [200, 200, 200, 200],
         obstacle: [150, 150, 150, 150], live: [10, 132, 255, 255])
 }
 
@@ -219,13 +231,51 @@ final class MinimapImageCache {
     private var timestamp: TimeInterval = -1
     private var palette: MinimapPalette?
     private var image: Image?
+    /// World-space (x, z) endpoints of wall strokes for the current map.
+    private(set) var wallSegments: [(a: SIMD2<Float>, b: SIMD2<Float>)] = []
 
     func image(for map: OccupancyMap, timestamp: TimeInterval, palette: MinimapPalette) -> Image? {
         if timestamp == self.timestamp, palette == self.palette { return image }
         self.timestamp = timestamp
         self.palette = palette
-        image = Self.render(map, palette: palette).map { Image(decorative: $0, scale: 1) }
+        let cells = Self.cleaned(map)
+        image = Self.render(map, cells: cells, palette: palette).map { Image(decorative: $0, scale: 1) }
+        wallSegments = Self.wallLines(map, cells: cells)
         return image
+    }
+
+    /// Joins neighbouring wall cells on a 5 cm grid (right, down and both diagonals) into
+    /// short strokes; along a straight wall they chain into one line.
+    private static func wallLines(_ map: OccupancyMap, cells: [UInt8]) -> [(a: SIMD2<Float>, b: SIMD2<Float>)] {
+        let n = map.size
+        let f = 2
+        let m = n / f
+        guard m > 1 else { return [] }
+        var wall = [Bool](repeating: false, count: m * m)
+        for y in 0..<(m * f) {
+            for x in 0..<(m * f) where cells[y * n + x] & ~OccupancyMap.liveFlag == OccupancyMap.Cell.wall.rawValue {
+                wall[(y / f) * m + x / f] = true
+            }
+        }
+        let cell = map.cellSize * Float(f)
+        func centre(_ x: Int, _ y: Int) -> SIMD2<Float> {
+            SIMD2(map.origin.x + (Float(x) + 0.5) * cell, map.origin.y + (Float(y) + 0.5) * cell)
+        }
+        var segments: [(a: SIMD2<Float>, b: SIMD2<Float>)] = []
+        for y in 0..<m {
+            for x in 0..<m where wall[y * m + x] {
+                let here = centre(x, y)
+                if x + 1 < m, wall[y * m + x + 1] { segments.append((here, centre(x + 1, y))) }
+                if y + 1 < m, wall[(y + 1) * m + x] { segments.append((here, centre(x, y + 1))) }
+                if x + 1 < m, y + 1 < m, wall[(y + 1) * m + x + 1], !wall[y * m + x + 1], !wall[(y + 1) * m + x] {
+                    segments.append((here, centre(x + 1, y + 1)))
+                }
+                if x > 0, y + 1 < m, wall[(y + 1) * m + x - 1], !wall[y * m + x - 1], !wall[(y + 1) * m + x] {
+                    segments.append((here, centre(x - 1, y + 1)))
+                }
+            }
+        }
+        return segments
     }
 
     /// Cleans the speckle out of the grid before painting: a lone cell with no neighbour of
@@ -257,10 +307,9 @@ final class MinimapImageCache {
         return out
     }
 
-    private static func render(_ map: OccupancyMap, palette: MinimapPalette) -> CGImage? {
+    private static func render(_ map: OccupancyMap, cells: [UInt8], palette: MinimapPalette) -> CGImage? {
         let n = map.size
-        guard n > 2, map.cells.count >= n * n else { return nil }
-        let cells = cleaned(map)
+        guard n > 2, cells.count >= n * n else { return nil }
         var pixels = [UInt8](repeating: 0, count: n * n * 4)
         for i in 0..<(n * n) {
             let raw = cells[i]

@@ -19,42 +19,45 @@ struct ProximityDisplay: View {
     // The number is the one permitted custom size; it scales with Dynamic Type.
     @ScaledMetric(relativeTo: .largeTitle) private var numberSize: CGFloat = 104
     @ScaledMetric(relativeTo: .largeTitle) private var symbolSize: CGFloat = 72
+    @ScaledMetric(relativeTo: .largeTitle) private var wordHeight: CGFloat = 44
 
     var body: some View {
         VStack(spacing: HUDMetrics.spacingSmall) {
-            if let distance = state.distance, state.level != .inactive {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(distance, format: .number.precision(.fractionLength(1)))
-                        .font(.system(size: numberSize, weight: .heavy, design: .rounded))
-                        .monospacedDigit()
-                    Text("m")
-                        .font(.largeTitle)
-                        .fontWeight(.bold)
-                        .fontDesign(.rounded)
-                        .foregroundStyle(.secondary)
-                }
-                .lineLimit(1)
-                .minimumScaleFactor(0.5)
-            } else {
-                Image(systemName: state.symbol)
-                    .font(.system(size: symbolSize, weight: .heavy))
-                    .foregroundStyle(state.color)
-                    .frame(height: numberSize * 1.1)
-            }
-
+            // State word first, then the number. Both rows have fixed heights so the
+            // column never shifts as values change.
             HStack(spacing: HUDMetrics.spacingSmall) {
-                if state.distance != nil {
-                    Image(systemName: state.symbol)
-                }
+                Image(systemName: state.symbol)
                 Text(state.title)
             }
             .font(.largeTitle)
             .fontWeight(.bold)
             .fontDesign(.rounded)
             .foregroundStyle(state.color)
-            .lineLimit(2)
+            .lineLimit(1)
             .minimumScaleFactor(0.6)
-            .multilineTextAlignment(.center)
+            .frame(height: wordHeight)
+
+            Group {
+                if let distance = state.distance, state.level != .inactive {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(distance, format: .number.precision(.fractionLength(1)))
+                            .font(.system(size: numberSize, weight: .heavy, design: .rounded))
+                            .monospacedDigit()
+                        Text("m")
+                            .font(.largeTitle)
+                            .fontWeight(.bold)
+                            .fontDesign(.rounded)
+                            .foregroundStyle(.secondary)
+                    }
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                } else {
+                    Image(systemName: state.symbol)
+                        .font(.system(size: symbolSize, weight: .heavy))
+                        .foregroundStyle(state.color)
+                }
+            }
+            .frame(height: numberSize * 1.15)
         }
         .foregroundStyle(.white)
         .frame(maxWidth: .infinity)
