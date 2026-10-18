@@ -75,6 +75,36 @@ struct HUDButton: View {
     }
 }
 
+// MARK: - Compact icon-only button (Where am I, mute, settings)
+
+struct IconButton: View {
+    let symbol: String
+    let label: String
+    var hint: String? = nil
+    var dimmed = false
+    let action: () -> Void
+
+    var body: some View {
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(dimmed ? .white.opacity(0.4) : .white)
+                .frame(width: 52, height: Theme.controlHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.chipRadius + 4, style: .continuous)
+                        .fill(.white.opacity(dimmed ? 0.05 : 0.12))
+                )
+                .contentShape(RoundedRectangle(cornerRadius: Theme.chipRadius + 4, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityHint(hint ?? "")
+    }
+}
+
 // MARK: - Describe
 
 struct DescribeButton: View {
