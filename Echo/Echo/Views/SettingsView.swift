@@ -6,6 +6,7 @@
 //  the audio engine and narrator; the HUD mirrors them into HUDPreferences.
 //
 
+import AVFAudio
 import SwiftUI
 
 struct SettingsView: View {
@@ -22,6 +23,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 soundSection
+                voiceSection
                 displaySection
                 mapSection
                 helpSection
@@ -60,6 +62,9 @@ struct SettingsView: View {
             Toggle(isOn: $audio.hapticsEnabled) {
                 Label("Haptic ticks", systemImage: "iphone.radiowaves.left.and.right")
             }
+            Toggle(isOn: Binding(get: { narrator.earconsEnabled }, set: { narrator.earconsEnabled = $0; audio.earconsEnabled = $0 })) {
+                Label("Chimes before warnings", systemImage: "bell.badge.waveform")
+            }
         } header: {
             Text("Sound")
         } footer: {
@@ -68,6 +73,47 @@ struct SettingsView: View {
         .onChange(of: audio.isMuted) { Haptics.select() }
         .onChange(of: narrator.isEnabled) { Haptics.select() }
         .onChange(of: audio.hapticsEnabled) { Haptics.select() }
+    }
+
+    // MARK: Voice
+
+    private var voiceSection: some View {
+        Section {
+            Picker(selection: $narrator.verbosity) {
+                ForEach(NarrationVerbosity.allCases) { level in
+                    Text(level.title).tag(level)
+                }
+            } label: {
+                Label("Talkativeness", systemImage: "text.bubble")
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: narrator.verbosity) { Haptics.select() }
+            Picker(selection: Binding(get: { narrator.preferredVoiceIdentifier ?? "" },
+                                      set: { narrator.preferredVoiceIdentifier = $0.isEmpty ? nil : $0 })) {
+                Text("Best available").tag("")
+                ForEach(Narrator.englishVoices(), id: \.identifier) { voice in
+                    Text("\(voice.name) · \(voice.language)").tag(voice.identifier)
+                }
+            } label: {
+                Label("Voice", systemImage: "person.wave.2")
+            }
+            LabeledContent("In use", value: narrator.voiceDescription)
+            HStack(spacing: 12) {
+                Image(systemName: "tortoise.fill").foregroundStyle(.secondary)
+                Slider(value: $narrator.speechRate, in: 0.4...0.65)
+                    .accessibilityLabel("Speaking rate")
+                Image(systemName: "hare.fill").foregroundStyle(.secondary)
+            }
+            Button {
+                narrator.announce("This is how I sound.")
+            } label: {
+                Label("Test voice", systemImage: "play.fill")
+            }
+        } header: {
+            Text("Voice")
+        } footer: {
+            Text("Quiet: only steps, people in your path and safety signs. Normal: also what is ahead, doorways and path changes. Verbose: everything, more often. Premium voices download from Settings › Accessibility › Spoken Content.")
+        }
     }
 
     // MARK: Display

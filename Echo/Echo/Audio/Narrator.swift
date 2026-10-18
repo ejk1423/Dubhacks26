@@ -8,12 +8,14 @@
 //  before the foot gets there.
 //
 //  Policy, in order of priority each snapshot:
-//    1. Trip hazards in the walking line (always; a two-tone chime precedes the line).
-//    2. People or animals walking toward the user (chime), then people in the path.
-//    3. Blocked and standing: which side is open.
+//    1. Trip hazards and drop-offs in the walking line (always; a chime precedes them),
+//       then anything at head height ahead.
+//    2. People or animals walking toward the user (chime), anything else coming at the
+//       user (chime), then people in the path.
+//    3. Blocked and standing: a doorway or which side is open.
 //    4. Changes: "Path clear" once after an obstacle is passed, "Narrowing" / "Opening up"
-//       as the clearance between walls shrinks or grows, "Opening on your left" as a
-//       side opens while walking.
+//       as the clearance between walls shrinks or grows, "Doorway on your left" and
+//       "Opening on your left" as they appear while walking.
 //    5. The object about to be reached, by name, and signs with their side.
 //  Nothing is repeated while it stays true: every kind of line has its own repeat limit,
 //  people are keyed by track so each is announced once, and `verbosity` decides which
@@ -155,10 +157,18 @@ final class Narrator {
         }) {
             // Once per hazard (ids are stable while it stays put), and never two in quick succession.
             if lastSpoken["hazard"].map({ now - $0 >= 3 }) ?? true,
-               say(Self.name(hazard.kind), key: "hazard:\(hazard.id)", every: 12, interrupt: true, alert: true, now: now) {
+               say(Self.name(hazard), key: "hazard:\(hazard.id)", every: 12, interrupt: true, alert: true, now: now) {
                 lastSpoken["hazard"] = now
                 return
             }
+        }
+
+        // 1b. Something at head height (a sign, a branch, an open cabinet door) that the
+        // body-height sonar would not have mentioned.
+        if let overhead = snapshot.nearestOverheadObstacle,
+           snapshot.nearestBodyObstacle.map({ $0.horizontalDistance > overhead.horizontalDistance + 0.3 }) ?? true,
+           overhead.horizontalDistance <= objectMinDistance + 0.3 || secondsTo(overhead.horizontalDistance) <= objectLeadTime {
+            if say("Low overhead ahead", key: "overhead", every: 10, interrupt: true, alert: true, now: now) { return }
         }
 
         // 2. Someone walking toward the user: early, with a chime.
@@ -176,6 +186,15 @@ final class Narrator {
                         lastSpoken["person"] = now
                         return
                     }
+                }
+            }
+
+            // 2b. Something that is not a tracked person coming at the user (a cart, a bike, a
+            // person the camera has not boxed yet).
+            if snapshot.isTargetApproaching, let targetDistance, targetDistance <= 3.5,
+               !fresh.detections.contains(where: { $0.movingTowardYou }) {
+                if say("Something coming toward you", key: "approachTarget", every: 10, interrupt: true, alert: true, now: now) {
+                    return
                 }
             }
 
@@ -202,8 +221,12 @@ final class Narrator {
             }
         }
 
-        // 4. Blocked and standing: say where it is open.
+        // 4. Blocked and standing: a doorway if there is one, else which side is open.
         if let targetDistance, targetDistance <= 0.6, !walking, verbosity != .quiet || closeness > 0.9 {
+            if let door = snapshot.openings.first(where: { $0.isDoorway && abs($0.bearing) > 0.4 }) {
+                let line = "Blocked. Doorway \(Self.sideWords(bearing: door.bearing))" + (Self.spoken(door.distance).map { ", \($0)" } ?? "")
+                if say(line, key: "blocked", every: 8, now: now) { return }
+            }
             if let line = openings(in: snapshot) {
                 if say("Blocked. \(line)", key: "blocked", every: 8, now: now) { return }
             }
@@ -215,6 +238,13 @@ final class Narrator {
         }
         if walking, verbosity != .quiet, let side = sideLine {
             if say(side.line, key: side.key, every: 6, now: now) { return }
+        }
+
+        // 5b. Doorways coming up beside the path (not the one straight ahead: that is just the way).
+        if walking, verbosity != .quiet,
+           let door = snapshot.openings.first(where: { $0.isDoorway && abs($0.bearing) > 0.5 && $0.distance <= 2.5 }) {
+            let line = "Doorway \(Self.sideWords(bearing: door.bearing))" + (Self.spoken(door.distance).map { ", \($0)" } ?? "")
+            if say(line, key: "door:\(door.id)", every: 30, now: now) { return }
         }
 
         // 6. What the obstacle ahead is, as it is about to be reached.
@@ -242,15 +272,22 @@ final class Narrator {
 
     // MARK: Context tracking
 
-    /// Clearance between the nearest things front-left and front-right, from the fine sectors.
+    /// Clearance between the nearest things either side of the walking line, from the
+    /// store's lateral profile (falls back to the fine sectors when it has nothing).
     private func updateWidth(_ snapshot: SceneSnapshot) {
-        let clearance = Self.clearance(snapshot)
         let width: Float?
-        switch (clearance.left, clearance.right) {
-        case (nil, nil): width = nil
-        case let (l?, r?): width = l + r
-        case let (l?, nil): width = l + 3
-        case let (nil, r?): width = 3 + r
+        if snapshot.clearWidthAhead > 0, snapshot.clearWidthAhead < 4.9 {
+            width = snapshot.clearWidthAhead
+        } else if snapshot.clearWidthAhead >= 4.9 {
+            width = nil
+        } else {
+            let clearance = Self.clearance(snapshot)
+            switch (clearance.left, clearance.right) {
+            case (nil, nil): width = nil
+            case let (l?, r?): width = l + r
+            case let (l?, nil): width = l + 3
+            case let (nil, r?): width = 3 + r
+            }
         }
         if let width {
             smoothedWidth = smoothedWidth.map { $0 * 0.7 + width * 0.3 } ?? width
@@ -344,7 +381,7 @@ final class Narrator {
 
         if let hazard = snapshot.tripHazards.first(where: { $0.distanceAhead > 0 && $0.distanceAhead <= 3 }) {
             let side = abs(hazard.lateralOffset) > 0.5 ? (hazard.lateralOffset < 0 ? " on your left" : " on your right") : ""
-            urgent.append(Self.phrase(Self.name(hazard.kind), at: hazard.distanceAhead, side: side.isEmpty ? " ahead" : side))
+            urgent.append(Self.phrase(Self.name(hazard), at: hazard.distanceAhead, side: side.isEmpty ? " ahead" : side))
         }
 
         let people = (fresh?.detections ?? []).filter { $0.distance != nil && abs($0.bearing) <= 1.3 }
@@ -369,6 +406,12 @@ final class Narrator {
             parts.append("Clear ahead.")
         }
 
+        if let overhead = snapshot.nearestOverheadObstacle, overhead.horizontalDistance <= 1.5 {
+            urgent.append(Self.phrase("Something at head height", at: overhead.horizontalDistance, side: " ahead"))
+        }
+        if let door = snapshot.openings.first(where: { $0.isDoorway }) {
+            parts.append(Self.phrase("Doorway", at: door.distance, side: " " + Self.sideWords(bearing: door.bearing)))
+        }
         if let openings = openings(in: snapshot) { parts.append(openings + ".") }
         if let width = smoothedWidth, width < 2.5 { parts.append("About \(Self.spokenWidth(width)) wide.") }
 
@@ -424,6 +467,11 @@ final class Narrator {
                 let what = Self.thing(in: side.range, of: snapshot) ?? "Something"
                 parts.append(Self.phrase(what, at: side.distance, side: " " + side.name))
             }
+        }
+
+        let doors = snapshot.openings.filter(\.isDoorway).prefix(2)
+        for door in doors {
+            parts.append(Self.phrase("Doorway", at: door.distance, side: " " + Self.sideWords(bearing: door.bearing)))
         }
 
         let people = (vision?.detections ?? []).filter { $0.distance != nil }
@@ -494,9 +542,10 @@ final class Narrator {
 
     // MARK: Phrasing
 
-    private static func name(_ kind: TripHazardKind) -> String {
-        switch kind {
-        case .drop: return "Step down"
+    /// Edge hazards (the floor simply ends) are published as `.drop` with no vertices below.
+    private static func name(_ hazard: TripHazard) -> String {
+        switch hazard.kind {
+        case .drop: return hazard.vertexCount == 0 ? "Drop-off" : "Step down"
         case .bump: return "Step up"
         case .unknownSurface: return "Uneven ground"
         }

@@ -81,7 +81,7 @@ struct ProximityHero: View {
             Image(systemName: "checkmark")
                 .font(.system(size: large ? 92 : 54, weight: .heavy))
                 .foregroundStyle(Theme.clear)
-        case .hazard:
+        case .hazard, .edge:
             VStack(spacing: 2) {
                 Image(systemName: state.symbol ?? "exclamationmark")
                     .font(.system(size: large ? 64 : 40, weight: .heavy))

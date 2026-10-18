@@ -24,6 +24,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         case slow           // closing in
         case stop           // at contact
         case hazard(TripHazardKind)
+        case edge           // the floor ends: a platform edge or stairs down with nothing seen below
     }
 
     let kind: Kind
@@ -35,7 +36,8 @@ nonisolated struct ProximityState: Equatable, Sendable {
     static func make(running: Bool, hazard: TripHazard?, closeness: Float, distance: Float?) -> ProximityState {
         guard running else { return ProximityState(kind: .starting, distance: nil, closeness: 0) }
         if let hazard {
-            return ProximityState(kind: .hazard(hazard.kind), distance: hazard.distanceAhead, closeness: closeness)
+            let kind: Kind = hazard.kind == .drop && hazard.vertexCount == 0 ? .edge : .hazard(hazard.kind)
+            return ProximityState(kind: kind, distance: hazard.distanceAhead, closeness: closeness)
         }
         guard let distance else { return ProximityState(kind: .clear, distance: nil, closeness: 0) }
         switch closeness {
@@ -50,7 +52,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         case .starting: return .inactive
         case .clear: return .clear
         case .ahead, .slow: return .caution
-        case .stop, .hazard: return .danger
+        case .stop, .hazard, .edge: return .danger
         }
     }
 
@@ -65,6 +67,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         case .hazard(.bump): return "Step up"
         case .hazard(.drop): return "Step down"
         case .hazard(.unknownSurface): return "Uneven ground"
+        case .edge: return "Drop-off"
         }
     }
 
@@ -76,6 +79,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         case .hazard(.bump): return "arrow.up.to.line"
         case .hazard(.drop): return "arrow.down.to.line"
         case .hazard(.unknownSurface): return "questionmark"
+        case .edge: return "arrow.down.right.and.arrow.up.left"
         case .ahead, .slow, .stop: return nil
         }
     }
@@ -85,7 +89,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         switch kind {
         case .starting: return Theme.inactive
         case .clear: return Theme.clear
-        case .hazard: return Theme.danger
+        case .hazard, .edge: return Theme.danger
         case .ahead, .slow, .stop: return Theme.proximityColor(closeness: closeness)
         }
     }
@@ -94,7 +98,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
     var glowStrength: Double {
         switch kind {
         case .starting, .clear: return 0
-        case .hazard: return 0.55
+        case .hazard, .edge: return 0.55
         case .ahead, .slow, .stop: return Double(closeness * closeness) * 0.9
         }
     }
@@ -106,7 +110,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         case .ahead: return "Obstacle \(Self.spoken(distance)) ahead"
         case .slow: return "Slow down. Obstacle \(Self.spoken(distance)) ahead"
         case .stop: return "Stop. Obstacle \(Self.spoken(distance)) ahead"
-        case .hazard: return "\(title), \(Self.spoken(distance)) ahead"
+        case .hazard, .edge: return "\(title), \(Self.spoken(distance)) ahead"
         }
     }
 
@@ -133,7 +137,7 @@ final class StatusAnnouncer {
         let now = ProcessInfo.processInfo.systemUptime
         let urgent: Bool
         switch state.kind {
-        case .stop, .hazard: urgent = true
+        case .stop, .hazard, .edge: urgent = true
         default: urgent = false
         }
         // Clear <-> ahead flips every few hundred milliseconds while walking along a wall;

@@ -16,12 +16,25 @@ room on demand.
   second and a half before your foot gets there, timed by walking speed rather than a
   fixed distance. People and animals in your path, the object you are about to reach,
   and wayfinding signs (EXIT, RESTROOM, STAIRS...) are named.
-- **Describe.** One button speaks a summary: the kind of place, what is ahead and how
-  far, which sides are open, people nearby, steps and signs. If you stop at an
-  obstacle it tells you which side is clear.
+- **Context, not nagging.** Nothing is repeated while it stays true. The voice speaks
+  changes: "Path clear" once you are past something, "Narrowing" as walls close in,
+  "Doorway on your left, two metres" as one comes up, "Low overhead" for things at
+  head height, "Something coming toward you" for anything approaching, "Drop-off"
+  where the floor ends. Three talkativeness levels; a two-tone chime precedes
+  warnings so you know a line is coming.
+- **Describe / Where am I.** One button speaks what matters now, most important
+  first: hazards, people coming at you, what is ahead and how far, doorways, open
+  sides, the width of the space, the last sign seen ("Exit sign was on your right,
+  a moment ago"), the kind of place. If you stop at an obstacle it tells you which
+  side is clear.
 - **Live map.** A heading-up blueprint of the room from the LiDAR mesh, with the cells
   the camera sees right now drawn live, plus a see-through rendering of the nearby
-  surfaces over the camera feed.
+  surfaces over the camera feed. Tap it for a full-screen map with distances in
+  every direction.
+- **Two layouts.** Simple mode (giant state, Describe, nothing to read) for blind
+  users; Detail mode (map, sensor status, what the camera sees) for sighted testers.
+  Full VoiceOver support, a first-run tutorial, and a settings sheet for sound,
+  voice, display and map.
 - Haptic ticks mirror the beeps, so the phone in your hand backs up the audio.
 
 ## How it works
@@ -31,9 +44,10 @@ Everything runs on-device.
 | Layer | Source | What it contributes |
 | --- | --- | --- |
 | ARKit scene reconstruction | LiDAR mesh | Classified surfaces (wall, floor, furniture...) in 360°, used for the map, the rendering and the sonar |
-| ARKit `sceneDepth` | LiDAR + camera fused depth map | Instant, dense depth in the camera's view: drives the walking-corridor sonar and vetoes stale mesh the camera can see past (someone who walked on, a chair that moved) |
-| Apple Vision | Camera image | People and animals (boxed, fused with depth for distance and bearing), classification of the object ahead and of the scene, sign text |
-| Trip-hazard scan | Mesh floor vertices vs. estimated ground | Drops, curbs and steps in a corridor ahead, confirmed over several frames |
+| ARKit `sceneDepth` | LiDAR + camera fused depth map | Instant, dense depth in the camera's view: drives the walking-corridor sonar (split into body and head-height bands), a per-frame z-buffer that vetoes stale mesh the camera can see past (someone who walked on, a chair that moved), edge detection where the floor ends, and path clearance |
+| Apple Vision | Camera image | People and animals (boxed, tracked across frames, fused with depth for distance, bearing and approach speed), confidence-weighted naming of the object ahead, scene classification, sign reading with remembered positions |
+| Occupancy map | Mesh + depth | 5 cm top-down map; ray-marched to find doorways and openings; moving-target velocity from the corridor history |
+| Trip-hazard scan | Mesh floor vertices vs. estimated ground | Drops, curbs and steps in a corridor ahead, confirmed over several frames; a step must span the path and have nothing standing on it. Ground falls back to a height histogram outdoors |
 | AVAudioEngine + AVSpeechSynthesizer | | Stereo beeps with a gentle bearing nudge; spoken lines with per-kind repeat limits |
 
 Geometry is processed on a Swift actor off the main thread; Vision runs on its own

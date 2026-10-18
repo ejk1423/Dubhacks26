@@ -81,6 +81,7 @@ struct ContentView: View {
             narrator.update(snapshot: snapshot, vision: manager.visionReport,
                             closeness: audio.closeness, targetDistance: audio.targetDistance)
         }
+        narrator.audio = audio
         audio.isMuted = !prefs.beeps
         audio.masterVolume = prefs.volume
         audio.hapticsEnabled = prefs.haptics
@@ -204,9 +205,17 @@ struct ContentView: View {
                     StatusChip(symbol: "eye.fill", text: scene)
                 }
                 ForEach(Array(peopleAhead.prefix(2).enumerated()), id: \.offset) { _, person in
-                    StatusChip(symbol: "figure.stand",
-                               text: person.distance.map { String(format: "%@ %.1f m", person.label, $0) } ?? person.label,
-                               tint: Theme.live)
+                    StatusChip(symbol: person.movingTowardYou ? "figure.walk.motion" : "figure.stand",
+                               text: (person.distance.map { String(format: "%@ %.1f m", person.label, $0) } ?? person.label)
+                                   + (person.movingTowardYou ? " ↓" : ""),
+                               tint: person.movingTowardYou ? Theme.danger : Theme.live)
+                }
+                if let door = snapshot?.openings.first(where: \.isDoorway) {
+                    StatusChip(symbol: "door.left.hand.open",
+                               text: String(format: "Doorway %@ %.1f m", door.bearing < -0.4 ? "L" : (door.bearing > 0.4 ? "R" : "ahead"), door.distance))
+                }
+                if let overhead = snapshot?.nearestOverheadObstacle, overhead.horizontalDistance < 1.5 {
+                    StatusChip(symbol: "arrow.down.to.line", text: String(format: "Overhead %.1f m", overhead.horizontalDistance), tint: Theme.caution)
                 }
             }
             Spacer(minLength: 0)
@@ -245,6 +254,9 @@ struct ContentView: View {
         @Bindable var audio = audio
         @Bindable var narrator = narrator
         return HStack(spacing: 8) {
+            HUDButton(title: "Where am I", symbol: "location.fill", hint: "Speaks the kind of place, its width, open sides and the last sign") {
+                narrator.whereAmI(snapshot: snapshot, vision: manager.visionReport)
+            }
             Toggle("Beeps", isOn: Binding(get: { !audio.isMuted }, set: { audio.isMuted = !$0 }))
                 .toggleStyle(HUDToggleStyle(onSymbol: "speaker.wave.2.fill", offSymbol: "speaker.slash.fill"))
                 .accessibilityHint("Collision beeps for what is ahead")
