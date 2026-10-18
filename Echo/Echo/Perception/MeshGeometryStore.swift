@@ -545,6 +545,7 @@ actor MeshGeometryStore {
         var mapFloor = [UInt16](repeating: 0, count: mapSize * mapSize)
         var mapLive = [UInt16](repeating: 0, count: mapSize * mapSize)
         var mapLiveFloor = [UInt16](repeating: 0, count: mapSize * mapSize)
+        var mapObstacleTop = [Float](repeating: 0, count: mapSize * mapSize)   // highest solid point per cell
         func mapIndex(_ v: SIMD3<Float>) -> Int? {
             let column = Int((v.x - mapOrigin.x) / cfg.mapCellSize)
             let row = Int((v.z - mapOrigin.y) / cfg.mapCellSize)
@@ -622,6 +623,7 @@ actor MeshGeometryStore {
                             if solid {
                                 mapObstacle[idx] += 1
                                 if c != MeshClass.none { mapObstacleClass[idx] = c }
+                                if dy > mapObstacleTop[idx] { mapObstacleTop[idx] = dy }
                             } else if c == MeshClass.floor || abs(dy) < 0.15 {
                                 mapFloor[idx] += 1
                             }
@@ -955,6 +957,10 @@ actor MeshGeometryStore {
         let openings = detectOpenings(map: map, mapObstacleClass: mapObstacleClass, p0: p0,
                                       heading: heading, right: right, ground: ground)
 
+        // ---- 6c. Objects: blobs of non-wall obstacle for the camera to name ----------
+        let objects = detectObjects(map: map, obstacle: mapObstacle, obstacleClass: mapObstacleClass,
+                                    obstacleTop: mapObstacleTop, p0: p0, heading: heading, right: right, ground: ground)
+
         // ---- 7. Snapshot -------------------------------------------------------
         var snapshot = SceneSnapshot(
             timestamp: timestamp,
@@ -974,6 +980,7 @@ actor MeshGeometryStore {
             vertexCount: totalVertices
         )
         snapshot.openings = openings
+        snapshot.objects = objects
         snapshot.nearestBodyObstacle = bodyHit
         snapshot.nearestOverheadObstacle = headHit
         snapshot.targetApproachSpeed = motion.approach
@@ -1461,6 +1468,97 @@ actor MeshGeometryStore {
     // MARK: Geometry helpers
 
     /// Stable id for something that stays put: rounded world XZ plus kind.
+    // MARK: Objects
+
+    /// Clusters non-wall obstacle cells (8-connected on a coarsened grid) into discrete
+    /// things with a footprint, a height, a distance and a bearing. Walls, doors and
+    /// windows are excluded by class; anything longer than `objectMaxExtent` is treated
+    /// as structure rather than an object.
+    private func detectObjects(map: OccupancyMap, obstacle: [UInt16], obstacleClass: [UInt8], obstacleTop: [Float],
+                               p0: SIMD3<Float>, heading: SIMD3<Float>, right: SIMD3<Float>, ground: Float) -> [SceneObject] {
+        let cfg = config
+        let cc = max(1, cfg.objectCoarseCells)
+        let n = map.size / cc
+        guard n > 2 else { return [] }
+        let coarseCell = map.cellSize * Float(cc)
+        let minVertices = UInt16(cfg.mapMinVertices)
+
+        // Coarse occupancy: solid, non-wall. Keep the dominant class and the top height.
+        var solid = [Bool](repeating: false, count: n * n)
+        var furnitureVotes = [Int](repeating: 0, count: n * n)
+        var top = [Float](repeating: 0, count: n * n)
+        for row in 0..<(n * cc) {
+            let cr = row / cc
+            for column in 0..<(n * cc) {
+                let i = row * map.size + column
+                guard obstacle[i] >= minVertices else { continue }
+                let c = obstacleClass[i]
+                if c == MeshClass.wall || c == MeshClass.door || c == MeshClass.window { continue }
+                let ci = cr * n + column / cc
+                solid[ci] = true
+                if c == MeshClass.table || c == MeshClass.seat { furnitureVotes[ci] += 1 }
+                if obstacleTop[i] > top[ci] { top[ci] = obstacleTop[i] }
+            }
+        }
+
+        var visited = [Bool](repeating: false, count: n * n)
+        var found: [SceneObject] = []
+        for start in 0..<(n * n) where solid[start] && !visited[start] {
+            visited[start] = true
+            var stack = [start]
+            var members: [Int] = []
+            while let i = stack.popLast() {
+                members.append(i)
+                let r = i / n, c = i % n
+                for dr in -1...1 {
+                    for dc in -1...1 where dr != 0 || dc != 0 {
+                        let rr = r + dr, cc2 = c + dc
+                        guard rr >= 0, rr < n, cc2 >= 0, cc2 < n else { continue }
+                        let j = rr * n + cc2
+                        if solid[j], !visited[j] {
+                            visited[j] = true
+                            stack.append(j)
+                        }
+                    }
+                }
+            }
+            guard members.count >= cfg.objectMinCells else { continue }
+
+            var minX = Float.infinity, maxX = -Float.infinity, minZ = Float.infinity, maxZ = -Float.infinity
+            var height: Float = 0
+            var furniture = 0
+            var nearest = Float.infinity
+            for i in members {
+                let r = i / n, c = i % n
+                let x0 = map.origin.x + Float(c) * coarseCell, z0 = map.origin.y + Float(r) * coarseCell
+                minX = min(minX, x0); maxX = max(maxX, x0 + coarseCell)
+                minZ = min(minZ, z0); maxZ = max(maxZ, z0 + coarseCell)
+                height = max(height, top[i])
+                furniture += furnitureVotes[i]
+                let dx = max(x0 - p0.x, 0, p0.x - (x0 + coarseCell))
+                let dz = max(z0 - p0.z, 0, p0.z - (z0 + coarseCell))
+                nearest = min(nearest, (dx * dx + dz * dz).squareRoot())
+            }
+            let extent = max(maxX - minX, maxZ - minZ)
+            guard extent <= cfg.objectMaxExtent, nearest <= cfg.objectMaxDistance else { continue }
+
+            let centre = SIMD3((minX + maxX) / 2, ground, (minZ + maxZ) / 2)
+            let d = centre - p0
+            let bearing = atan2(d.x * right.x + d.z * right.z, d.x * heading.x + d.z * heading.z)
+            let bucket: SurfaceBucket = furniture > 0 ? .furniture : .unknown
+            var hasher = Hasher()
+            hasher.combine(Int((centre.x / 0.5).rounded()))
+            hasher.combine(Int((centre.z / 0.5).rounded()))
+            hasher.combine(bucket.rawValue)
+            found.append(SceneObject(id: hasher.finalize(), position: centre,
+                                     minXZ: SIMD2(minX, minZ), maxXZ: SIMD2(maxX, maxZ),
+                                     height: min(height, cfg.obstacleMaxHeight), distance: nearest,
+                                     bearing: bearing, bucket: bucket, cellCount: members.count))
+        }
+        found.sort { $0.distance < $1.distance }
+        return Array(found.prefix(cfg.objectMaxCount))
+    }
+
     private static func hazardID(position: SIMD3<Float>, kind: TripHazardKind?) -> Int {
         var hasher = Hasher()
         hasher.combine(Int((position.x / 0.25).rounded()))

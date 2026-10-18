@@ -117,7 +117,8 @@ struct ContentView: View {
 
     private var state: ProximityState {
         ProximityState.make(running: running, hazard: hazardAhead,
-                            closeness: audio.closeness, distance: audio.targetDistance)
+                            closeness: audio.closeness, distance: audio.targetDistance,
+                            objectName: snapshot.flatMap { Narrator.nameAhead(snapshot: $0, vision: manager.visionReport)?.name })
     }
 
     private var statusMessage: String? {

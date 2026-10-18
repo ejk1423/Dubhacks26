@@ -85,6 +85,13 @@ nonisolated struct PerceptionConfig: Sendable {
     var openingFlankTolerance: Float = 0.8     // the two flanks must be at about the same distance (same wall)
     var openingRayStepDegrees: Float = 3
     var openingCoarseCells: Int = 6            // map cells per ray-cast cell (15 cm; walls are sparse at 2.5 cm)
+
+    // Objects (clusters of non-wall obstacle cells handed to the camera for naming).
+    var objectCoarseCells: Int = 4             // map cells per clustering cell (10 cm)
+    var objectMinCells: Int = 3                // clustering cells before a blob counts
+    var objectMaxExtent: Float = 3.0           // metres; longer is a wall-like structure, not an object
+    var objectMaxDistance: Float = 3.5
+    var objectMaxCount: Int = 6
     var openingNeedsFloorBeyond = true         // floor seen through the gap, so an unscanned wall is not a door
     var openingRejectParallelWalls = true      // the space between two corridor walls is not a doorway
     var openingConfirmFrames: Int = 4
@@ -227,6 +234,26 @@ nonisolated struct ObstacleHit: Sendable, Equatable {
 /// A gap in the surroundings wide enough to walk through: a doorway, a corridor mouth,
 /// or the space between two pieces of furniture. Found by casting rays through the
 /// occupancy map and confirmed over several analyses.
+/// A cluster of non-wall obstacle cells in the occupancy map: a chair, a bin, a table.
+/// The camera classifies the image region of its box to put a name on it.
+nonisolated struct SceneObject: Sendable, Identifiable, Equatable {
+    /// Stable while the object stays roughly in place (rounded world XZ + kind).
+    let id: Int
+    /// World-space centre of the footprint at ground height.
+    let position: SIMD3<Float>
+    /// Footprint in world axes: min and max x / z.
+    let minXZ: SIMD2<Float>
+    let maxXZ: SIMD2<Float>
+    /// Metres above the ground of its highest solid point (capped at head height).
+    let height: Float
+    /// Horizontal distance to the nearest edge of the footprint.
+    let distance: Float
+    /// Radians from the walking heading to the centre, right positive.
+    let bearing: Float
+    let bucket: SurfaceBucket
+    let cellCount: Int
+}
+
 nonisolated struct Opening: Sendable, Identifiable, Equatable {
     /// Stable across frames while the opening stays roughly in place (rounded world XZ).
     let id: Int
@@ -342,6 +369,9 @@ nonisolated struct SceneSnapshot: Sendable {
 
     /// Walk-through gaps within `PerceptionConfig.openingMaxDistance`, nearest first.
     var openings: [Opening] = []
+    /// Discrete solid things (not walls) near the user, nearest first: what the camera is
+    /// asked to name. See `SceneObject`.
+    var objects: [SceneObject] = []
     /// Nearest thing in the forward corridor between shin and `headBandMin` (the body band).
     var nearestBodyObstacle: ObstacleHit? = nil
     /// Nearest thing in the forward corridor at head height (`headBandMin`...`obstacleMaxHeight`):

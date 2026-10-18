@@ -111,6 +111,13 @@ nonisolated struct SignSighting: Sendable, Equatable {
     }
 }
 
+/// A LiDAR object the camera has put a name on.
+nonisolated struct NamedObject: Sendable, Identifiable, Equatable {
+    let id: Int
+    let name: String
+    let confidence: Float
+}
+
 /// What the camera thinks the floor patch at a trip hazard is.
 nonisolated enum GroundKind: Sendable, Equatable {
     case step, object, flat
@@ -136,6 +143,10 @@ nonisolated struct VisionReport: Sendable {
     var groundKind: GroundKind? = nil
     var groundLabel: String? = nil
     var groundConfidence: Float = 0
+    /// Names for LiDAR objects (`SceneObject.id`), voted across passes.
+    var objects: [NamedObject] = []
+
+    func name(for objectID: Int) -> NamedObject? { objects.first { $0.id == objectID } }
 
     /// People in the report, nearest first.
     var people: [VisionDetection] {
@@ -158,6 +169,13 @@ nonisolated final class VisionObserver: @unchecked Sendable {
         let timestamp: TimeInterval
         /// Region around the nearest trip hazard on the floor, if any.
         var regionGround: CGRect? = nil
+        /// Image regions of the nearest LiDAR objects (`SceneObject.id` -> Vision rect).
+        var objectRegions: [ObjectRegion] = []
+    }
+
+    nonisolated struct ObjectRegion: Sendable {
+        let id: Int
+        let rect: CGRect
     }
 
     private let queue = DispatchQueue(label: "echo.vision", qos: .userInitiated)
@@ -168,6 +186,9 @@ nonisolated final class VisionObserver: @unchecked Sendable {
     // Worker-queue state.
     private var passCounter = 0
     private var groundVotes: [(kind: GroundKind, name: String, confidence: Float)?] = []
+    /// Per LiDAR object: decayed scores per name, and the pass it was last seen.
+    private var objectScores: [Int: [String: Float]] = [:]
+    private var objectLastSeen: [Int: Int] = [:]
     private var labelScores: [String: Float] = [:]
     private var labelLastSeenPass: [String: Int] = [:]
     private var sceneVotes: [String?] = []
@@ -255,6 +276,13 @@ nonisolated final class VisionObserver: @unchecked Sendable {
             classifyGround = request
             requests.append(request)
         }
+        var objectRequests: [(id: Int, request: VNClassifyImageRequest)] = []
+        for region in input.objectRegions.prefix(3) {
+            let request = VNClassifyImageRequest()
+            request.regionOfInterest = region.rect
+            objectRequests.append((region.id, request))
+            requests.append(request)
+        }
         var text: VNRecognizeTextRequest?
         if readsText {
             let request = VNRecognizeTextRequest()
@@ -322,11 +350,38 @@ nonisolated final class VisionObserver: @unchecked Sendable {
             }
         }
 
+        // Named LiDAR objects: scores accumulate per object across passes and decay, so a
+        // name needs to be seen repeatedly, and a bad frame cannot rename a chair a bin.
+        for (id, request) in objectRequests {
+            var scores = objectScores[id] ?? [:]
+            for key in scores.keys { scores[key]! *= 0.7 }
+            if let results = request.results {
+                for observation in results.prefix(10) where observation.confidence >= 0.12 {
+                    guard let name = Self.bestName(in: [observation], table: Self.objectNames, minimum: 0.12)?.name else { continue }
+                    if indoors == true, Self.outdoorOnly.contains(name) { continue }
+                    if indoors == false, Self.indoorOnly.contains(name) { continue }
+                    scores[name, default: 0] += observation.confidence
+                }
+            }
+            objectScores[id] = scores
+            objectLastSeen[id] = passCounter
+        }
+        for (id, seen) in objectLastSeen where passCounter - seen > 30 {
+            objectScores[id] = nil
+            objectLastSeen[id] = nil
+        }
+        var named: [NamedObject] = []
+        for (id, scores) in objectScores {
+            guard let best = scores.max(by: { $0.value < $1.value }), best.value >= 0.35 else { continue }
+            named.append(NamedObject(id: id, name: best.key, confidence: min(1, best.value / 1.5)))
+        }
+
         return VisionReport(timestamp: input.timestamp, detections: detections,
                             labelAhead: labelAhead, labelConfidence: labelConfidence,
                             scene: sceneName, signs: lastSigns, isIndoors: indoors,
                             lastSign: recentSigns.first, recentSigns: recentSigns,
-                            groundKind: groundKind, groundLabel: groundLabel, groundConfidence: groundConfidence)
+                            groundKind: groundKind, groundLabel: groundLabel, groundConfidence: groundConfidence,
+                            objects: named)
     }
 
     // MARK: Tracking

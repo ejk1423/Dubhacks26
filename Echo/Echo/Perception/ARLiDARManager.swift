@@ -443,6 +443,34 @@ extension ARLiDARManager: @preconcurrency ARSessionDelegate {
         }
         let region = snapshot?.nearestForwardObstacle.flatMap { imageRegion(around: $0.point, width: 0.44, height: 0.56) }
         let groundRegion = snapshot?.tripHazards.first.flatMap { imageRegion(around: $0.position, width: 0.5, height: 0.34) }
+
+        // The nearest LiDAR objects: project each box's corners and take the bounding rect.
+        var objectRegions: [VisionObserver.ObjectRegion] = []
+        if let snap = snapshot {
+            for object in snap.objects.prefix(3) {
+                var minX = CGFloat.infinity, minY = CGFloat.infinity, maxX = -CGFloat.infinity, maxY = -CGFloat.infinity
+                var behind = false
+                for x in [object.minXZ.x, object.maxXZ.x] {
+                    for z in [object.minXZ.y, object.maxXZ.y] {
+                        for y in [snap.groundHeight + 0.05, snap.groundHeight + max(object.height, 0.3)] {
+                            let world = SIMD3(x, y, z)
+                            let camera = frame.camera.transform.inverse * SIMD4(world.x, world.y, world.z, 1)
+                            if camera.z > -0.1 { behind = true }
+                            let p = frame.camera.projectPoint(world, orientation: .portrait, viewportSize: viewport)
+                            minX = min(minX, p.x / viewport.width); maxX = max(maxX, p.x / viewport.width)
+                            minY = min(minY, 1 - p.y / viewport.height); maxY = max(maxY, 1 - p.y / viewport.height)
+                        }
+                    }
+                }
+                guard !behind, minX.isFinite, maxX.isFinite, minY.isFinite, maxY.isFinite else { continue }
+                let padded = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY).insetBy(dx: -0.03, dy: -0.03)
+                let rect = padded.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+                // Mostly in view, and not a sliver.
+                guard rect.width >= 0.08, rect.height >= 0.08,
+                      rect.width * rect.height >= padded.width * padded.height * 0.5 else { continue }
+                objectRegions.append(.init(id: object.id, rect: rect))
+            }
+        }
         vision?.process(VisionObserver.Input(
             image: frame.capturedImage,
             depth: frame.sceneDepth?.depthMap,
@@ -452,7 +480,8 @@ extension ARLiDARManager: @preconcurrency ARSessionDelegate {
             cameraTransform: frame.camera.transform,
             regionAhead: region,
             timestamp: ProcessInfo.processInfo.systemUptime,
-            regionGround: groundRegion
+            regionGround: groundRegion,
+            objectRegions: objectRegions
         ))
     }
 

@@ -37,6 +37,15 @@ nonisolated struct ProximityState: Equatable, Sendable {
     let distance: Float?
     /// 0 (nothing in range) ... 1 (at contact).
     let closeness: Float
+    /// What the camera says the thing ahead is ("Chair"), when it knows.
+    var objectName: String? = nil
+
+    static func make(running: Bool, hazard: TripHazard?, closeness: Float, distance: Float?,
+                     objectName: String? = nil) -> ProximityState {
+        var state = make(running: running, hazard: hazard, closeness: closeness, distance: distance)
+        if hazard == nil { state.objectName = objectName }
+        return state
+    }
 
     static func make(running: Bool, hazard: TripHazard?, closeness: Float, distance: Float?) -> ProximityState {
         guard running else { return ProximityState(kind: .starting, distance: nil, closeness: 0) }
@@ -69,8 +78,8 @@ nonisolated struct ProximityState: Equatable, Sendable {
         switch kind {
         case .starting: return "Starting"
         case .clear: return "Clear ahead"
-        case .ahead: return "Something ahead"
-        case .slow: return "Slow down"
+        case .ahead: return "\(objectName ?? "Something") ahead"
+        case .slow: return objectName.map { "\($0): slow down" } ?? "Slow down"
         case .stop: return "Stop"
         case .hazard(.bump): return "Step up"
         case .hazard(.drop): return "Step down"

@@ -131,6 +131,30 @@ final class Narrator {
         synthesizer.delegate = delegate
     }
 
+    // MARK: Naming
+
+    /// The name of whatever the sonar is targeting: the LiDAR object whose footprint the
+    /// target point falls in (named by the camera over several passes), else the crop
+    /// classification around the target. Never "Person": people are handled separately.
+    static func nameAhead(snapshot: SceneSnapshot, vision: VisionReport?) -> (name: String, confidence: Float)? {
+        guard let vision else { return nil }
+        if let target = snapshot.nearestForwardObstacle?.point {
+            let candidates = snapshot.objects.filter {
+                target.x >= $0.minXZ.x - 0.25 && target.x <= $0.maxXZ.x + 0.25
+                    && target.z >= $0.minXZ.y - 0.25 && target.z <= $0.maxXZ.y + 0.25
+            }
+            for object in candidates {
+                if let named = vision.name(for: object.id), named.name != "Person" {
+                    return (named.name, named.confidence)
+                }
+            }
+        }
+        if let label = vision.labelAhead, label != "Person", vision.labelConfidence >= 0.3 {
+            return (label, vision.labelConfidence)
+        }
+        return nil
+    }
+
     // MARK: Per-snapshot narration
 
     func update(snapshot: SceneSnapshot, vision: VisionReport?, closeness: Float, targetDistance: Float?) {
@@ -250,7 +274,7 @@ final class Narrator {
         }
 
         // 6. What the obstacle ahead is, as it is about to be reached.
-        if let fresh, closeness > 0.3, let label = fresh.labelAhead, fresh.labelConfidence >= 0.3, label != "Person",
+        if let fresh, closeness > 0.3, let (label, _) = Self.nameAhead(snapshot: snapshot, vision: fresh),
            let targetDistance, targetDistance <= objectMinDistance || secondsTo(targetDistance) <= objectLeadTime,
            verbosity != .quiet || targetDistance <= 0.5,
            lastSpoken["object"].map({ now - $0 >= 5 }) ?? true {
@@ -398,9 +422,19 @@ final class Narrator {
 
         if let ahead = snapshot.nearestForwardObstacle {
             var what = "Something"
-            if let label = fresh?.labelAhead, (fresh?.labelConfidence ?? 0) >= 0.3, label != "Person" { what = label }
+            if let (label, _) = Self.nameAhead(snapshot: snapshot, vision: fresh ?? vision) { what = label }
             else if ahead.bucket == .wall { what = "Wall" }
             parts.append(Self.phrase(what, at: ahead.horizontalDistance, side: " ahead"))
+
+            // Other named things nearby, by side.
+            let others = snapshot.objects.compactMap { object -> (String, Float, Float)? in
+                guard let named = (fresh ?? vision)?.name(for: object.id), named.name != "Person",
+                      abs(object.bearing) > 0.35 || object.distance > ahead.horizontalDistance + 0.5 else { return nil }
+                return (named.name, object.distance, object.bearing)
+            }.prefix(2)
+            for (name, distance, bearing) in others {
+                parts.append(Self.phrase(name, at: distance, side: " " + Self.sideWords(bearing: bearing)))
+            }
         } else if snapshot.sectorDistances.count == 8, snapshot.sectorDistances[0].isFinite,
                   let distance = Self.spoken(snapshot.sectorDistances[0]) {
             parts.append("Clear ahead for \(distance).")
