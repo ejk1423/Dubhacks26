@@ -12,7 +12,7 @@
 //    Top       The map as a floating panel in the top-right corner; a small note in the
 //              top-left only when something is wrong (no headphones, finding the floor).
 //    Bottom    The distance and state in giant type, then one row: the prominent
-//              Describe button with Repeat, Mute Beeps and Settings. All in the bottom
+//              Describe button with Mute Beeps and Settings. All in the bottom
 //              third, within thumb reach.
 //
 //  Settings and the full map are sheets; the tutorial is a full-screen cover. Only
@@ -186,7 +186,6 @@ struct ContentView: View {
                 .accessibilitySortPriority(3)
             HUDControlBar(audio: audio, describeEnabled: running,
                           onDescribe: { narrator.describe(snapshot: snapshot, vision: manager.visionReport) },
-                          onRepeat: { narrator.repeatLast() },
                           onSettings: { showSettings = true })
                 .accessibilitySortPriority(2)
         }

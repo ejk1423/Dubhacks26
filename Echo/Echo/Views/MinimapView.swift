@@ -6,14 +6,13 @@
 //    1. the occupancy map, rasterised once per snapshot into a crisp CGImage
 //       (floor faint, walls bright, furniture warm, obstacles grey, cells the depth
 //       camera sees right now in the accent colour),
-//    2. the nearest surface per 15-degree sector as an arc (the parking-sensor picture),
-//    3. doorways as short bright chords,
+//    2. doorways as short bright chords,
 //    4. trip hazards as warning triangles, people from the camera as teal dots (filled
 //       when they are walking toward the user),
-//    5. the alert cone, the current target, metre rings with labels, the user chevron
-//       and the "ahead" marker.
-//  The map stays put (world-fixed, so it never spins); the user's chevron, cone, sonar
-//  arcs and the camera's detections turn with the heading instead.
+//    5. the current target and the user's arrow; the full-screen map adds metre rings
+//       and the alert cone.
+//  The map stays put (world-fixed, so it never spins); the user's arrow and the camera's
+//  detections turn with the heading instead. No frame: the panel fades into the camera.
 //
 
 import SwiftUI
@@ -48,12 +47,12 @@ struct MinimapView: View {
             // World layer: fixed.
             drawWorld(snap, in: context, centre: centre, scale: scale, mark: s)
 
-            // Metre rings, fixed.
-            for metres in stride(from: 1, through: Int(radius), by: 1) {
-                let rr = CGFloat(metres) * scale
-                context.stroke(Path(ellipseIn: CGRect(x: centre.x - rr, y: centre.y - rr, width: 2 * rr, height: 2 * rr)),
-                               with: .color(.white.opacity(0.16)), lineWidth: 1)
-                if detailed {
+            // Metre rings and the cone only on the full map; the HUD map stays clean.
+            if detailed {
+                for metres in stride(from: 1, through: Int(radius), by: 1) {
+                    let rr = CGFloat(metres) * scale
+                    context.stroke(Path(ellipseIn: CGRect(x: centre.x - rr, y: centre.y - rr, width: 2 * rr, height: 2 * rr)),
+                                   with: .color(.white.opacity(0.16)), lineWidth: 1)
                     context.draw(Text("\(metres) m").font(.caption).foregroundStyle(.white.opacity(0.6)),
                                  at: CGPoint(x: centre.x + rr - 3, y: centre.y + 3), anchor: .topTrailing)
                 }
@@ -63,19 +62,18 @@ struct MinimapView: View {
             var user = context
             user.translateBy(x: centre.x, y: centre.y)
             user.rotate(by: Angle(radians: headingAngle + .pi / 2))
-            drawCone(in: user, scale: scale)
-            drawSonar(snap, in: user, scale: scale)
+            if detailed { drawCone(in: user, scale: scale) }
             drawPeople(in: user, scale: scale, mark: s)
 
-            let chevron = Path { p in
-                p.move(to: CGPoint(x: 0, y: -10 * s))
-                p.addLine(to: CGPoint(x: -6.5 * s, y: 6 * s))
-                p.addLine(to: CGPoint(x: 0, y: 2.5 * s))
-                p.addLine(to: CGPoint(x: 6.5 * s, y: 6 * s))
+            // The user: a filled arrow, as on a car's navigation display.
+            let arrow = Path { p in
+                p.move(to: CGPoint(x: 0, y: -11 * s))
+                p.addLine(to: CGPoint(x: -7 * s, y: 7 * s))
+                p.addLine(to: CGPoint(x: 0, y: 3.5 * s))
+                p.addLine(to: CGPoint(x: 7 * s, y: 7 * s))
                 p.closeSubpath()
             }
-            user.fill(chevron, with: .color(.white))
-            user.stroke(chevron, with: .color(.black.opacity(0.7)), lineWidth: 1)
+            user.fill(arrow, with: .color(.red))
         }
         .accessibilityHidden(true)
     }
@@ -150,27 +148,6 @@ struct MinimapView: View {
         }
     }
 
-    /// Nearest surface per 15-degree sector as an arc (user frame, up = heading).
-    private func drawSonar(_ snap: SceneSnapshot, in context: GraphicsContext, scale: CGFloat) {
-        let sectors = snap.fineSectorHits
-        guard !sectors.isEmpty else { return }
-        let sonar = context
-        let step = 2 * Double.pi / Double(sectors.count)
-        let gap = 0.03
-        for (index, hit) in sectors.enumerated() {
-            guard let hit, hit.horizontalDistance.isFinite, hit.horizontalDistance <= radius else { continue }
-            let rr = CGFloat(hit.horizontalDistance) * scale
-            let mid = -Double.pi / 2 + Double(index) * step   // index 0 ahead, clockwise
-            let arc = Path { p in
-                p.addArc(center: .zero, radius: rr,
-                         startAngle: .radians(mid - step / 2 + gap),
-                         endAngle: .radians(mid + step / 2 - gap), clockwise: false)
-            }
-            sonar.stroke(arc, with: .color(.white.opacity(0.85)),
-                         style: StrokeStyle(lineWidth: detailed ? 5 : 2.5, lineCap: .round))
-        }
-    }
-
     /// People and animals from the camera, placed by bearing and distance in the user
     /// frame (up = heading). Filled when walking toward the user.
     private func drawPeople(in context: GraphicsContext, scale: CGFloat, mark s: CGFloat) {
@@ -207,8 +184,8 @@ nonisolated struct MinimapPalette: Equatable, Sendable {
     var live: SIMD4<UInt8>
 
     static let dark = MinimapPalette(
-        floor: [60, 60, 60, 60], wall: [245, 245, 245, 245], furniture: [240, 180, 90, 240],
-        obstacle: [170, 170, 170, 170], live: [10, 132, 255, 255])
+        floor: [70, 70, 70, 70], wall: [250, 250, 250, 250], furniture: [235, 185, 110, 235],
+        obstacle: [185, 185, 185, 185], live: [10, 132, 255, 255])
 }
 
 /// Rasterises the occupancy grid into one small RGBA image per snapshot.
@@ -284,7 +261,7 @@ struct MapView: View {
 
                     readings
 
-                    Text("The map stays put and your arrow turns. Arcs are the nearest surface in each direction, white bars are doorways, triangles are steps, teal dots are people, and the blue cone is where the beeps listen.")
+                    Text("The map stays put and your arrow turns. White bars are doorways, triangles are steps, teal dots are people, and the blue cone is where the beeps listen.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

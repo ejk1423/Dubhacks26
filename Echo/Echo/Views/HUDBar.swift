@@ -48,7 +48,6 @@ struct HUDControlBar: View {
     @Bindable var audio: SpatialAudioEngine
     let describeEnabled: Bool
     let onDescribe: () -> Void
-    let onRepeat: () -> Void
     let onSettings: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -64,17 +63,6 @@ struct HUDControlBar: View {
             HStack(spacing: HUDMetrics.spacingSmall) {
                 DescribeButton(enabled: describeEnabled, action: onDescribe)
                     .layoutPriority(1)
-
-                Button {
-                    Haptics.tap()
-                    onRepeat()
-                } label: {
-                    Label("Repeat", systemImage: "repeat")
-                }
-                .labelStyle(.iconOnly)
-                .hudButtonStyle()
-                .buttonBorderShape(.circle)
-                .accessibilityHint("Says the last spoken line again")
 
                 // HIG › Toggles: "Outside of a list, use a button that behaves like a toggle,
                 // not a switch", and show state by more than colour: the slash does that.
@@ -107,8 +95,9 @@ struct HUDControlBar: View {
 
 // MARK: - Map panel
 
-/// The map as a floating panel in the top-right corner: a plain dark rounded rectangle,
-/// not glass, so the drawing has a steady background. Tapping opens the full map.
+/// The map floating in the top-right corner with no frame: a soft dark cloud fades into
+/// the camera at the edges (as a car's navigation inset does), and the drawing sits on
+/// it. Tapping opens the full map.
 struct MapPanel: View {
     let snapshot: SceneSnapshot?
     let vision: VisionReport?
@@ -127,10 +116,15 @@ struct MapPanel: View {
             MinimapView(snapshot: snapshot, vision: vision, radius: radius,
                         coneHalfAngle: coneHalfAngle, alertRange: alertRange)
                 .frame(width: min(size, 260), height: min(size, 260))
-                .background(Color.black.opacity(0.62), in: .rect(cornerRadius: HUDMetrics.spacingLarge, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: HUDMetrics.spacingLarge, style: .continuous)
-                    .strokeBorder(.white.opacity(0.25), lineWidth: 1))
-                .contentShape(.rect(cornerRadius: HUDMetrics.spacingLarge, style: .continuous))
+                .background(
+                    RadialGradient(colors: [.black.opacity(0.72), .black.opacity(0.6), .clear],
+                                   center: .center, startRadius: 0, endRadius: min(size, 260) * 0.62)
+                )
+                .mask(
+                    RadialGradient(colors: [.black, .black, .clear],
+                                   center: .center, startRadius: 0, endRadius: min(size, 260) * 0.6)
+                )
+                .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Map of the room")
