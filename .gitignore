@@ -1,0 +1,12 @@
+# Xcode
+xcuserdata/
+*.xcuserdatad
+*.xcuserstate
+project.xcworkspace/xcuserdata/
+project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
+build/
+DerivedData/
+
+# OS metadata
+.DS_Store
+Thumbs.db
