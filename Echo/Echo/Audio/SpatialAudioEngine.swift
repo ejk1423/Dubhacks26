@@ -110,6 +110,7 @@ final class SpatialAudioEngine {
     @ObservationIgnored private var smoothedBearing: Float?
     @ObservationIgnored private var smoothedDistance: Float?
     @ObservationIgnored private var trackedPoint: SIMD3<Float>?
+    @ObservationIgnored private var overheadUntil: TimeInterval = 0
     @ObservationIgnored private var blockedSince: TimeInterval?
     @ObservationIgnored private var wasBlocked = false
     @ObservationIgnored private var clearSince: TimeInterval?
@@ -346,7 +347,15 @@ final class SpatialAudioEngine {
         // One pitch throughout: urgency is carried by rate and loudness, never by a climbing
         // tone. Head-height obstacles (a sign, a branch) sit a fifth higher so they sound
         // different from things at body height.
-        let overhead = snap.nearestOverheadObstacle.map { abs($0.horizontalDistance - rawDistance) < 0.2 } ?? false
+        // Higher pitch only when the thing you would hit is at head height with nothing at
+        // body height in front of it; held for a second so the pitch cannot flicker when a
+        // wall spans both bands.
+        let bodyDistance = snap.nearestBodyObstacle?.horizontalDistance ?? .infinity
+        let overheadNow = snap.nearestOverheadObstacle.map {
+            abs($0.horizontalDistance - rawDistance) < 0.2 && bodyDistance > $0.horizontalDistance + 0.4
+        } ?? false
+        if overheadNow { overheadUntil = now + 1.0 }
+        let overhead = now < overheadUntil
         let frequency = 520.0 * (overhead ? 1.5 : 1)
         let beep = Self.beep(rate: stereo.sampleRate, frequency: frequency, duration: contact ? interval + 0.01 : 0.045)
         let gain = (0.10 + 0.7 * c * c) * (ducked ? 0.4 : 1)

@@ -177,6 +177,7 @@ actor MeshGeometryStore {
         static let halfTan: Float = 0.75      // grid extent; the live field of view is measured from the points
         let inverse: simd_float4x4
         var minZ = [Float](repeating: .infinity, count: Self.nx * Self.ny)
+        var counts = [UInt16](repeating: 0, count: Self.nx * Self.ny)
         var maxTanX: Float = 0
         var maxTanY: Float = 0
         var pointCount = 0
@@ -208,14 +209,17 @@ actor MeshGeometryStore {
             if abs(p.tx) > maxTanX { maxTanX = abs(p.tx) }
             if abs(p.ty) > maxTanY { maxTanY = abs(p.ty) }
             if p.z < minZ[idx] { minZ[idx] = p.z }
+            counts[idx] &+= 1
         }
 
         /// The camera currently sees something at least `margin` farther than `v` along
-        /// the same line of sight: `v` is stale mesh.
+        /// the same line of sight: `v` is stale mesh. Only trusted for mesh within 3 m and
+        /// where the depth cell has several confident returns, so a glossy surface or a
+        /// window (which return little or far) cannot erase the real wall around it.
         func seesPast(_ v: SIMD3<Float>, margin: Float) -> Bool {
-            guard pointCount > 0, let p = project(v),
+            guard pointCount > 0, let p = project(v), p.z <= 3.0,
                   abs(p.tx) <= maxTanX * 0.95, abs(p.ty) <= maxTanY * 0.95,
-                  let idx = Self.cellIndex(tx: p.tx, ty: p.ty) else { return false }
+                  let idx = Self.cellIndex(tx: p.tx, ty: p.ty), counts[idx] >= 4 else { return false }
             let seen = minZ[idx]
             return seen.isFinite && p.z < seen - margin
         }
@@ -620,7 +624,10 @@ actor MeshGeometryStore {
                         }
 
                         // -- Occupancy map: solid things at body height, and the floor.
-                        if mapRelevant, !stale, let idx = mapIndex(v) {
+                        // The map is for orientation and should be steady: it only drops mesh the
+                        // camera sees well past (a person who left), not marginal cases.
+                        let mapStale = solid && stale && depthView.seesPast(v, margin: ghostMargin + 0.5)
+                        if mapRelevant, !mapStale, let idx = mapIndex(v) {
                             if solid {
                                 mapObstacle[idx] += 1
                                 if c != MeshClass.none { mapObstacleClass[idx] = c }
@@ -1353,7 +1360,20 @@ actor MeshGeometryStore {
     /// median protects against a stale plane from another level (ramps, split levels). With
     /// no classified floor at all (outdoors, a fresh scan) it falls back to the dominant height
     /// of all mesh under the phone, cross-checked against any large unclassified plane.
+    /// Ground estimate with a plausibility check: a phone held for walking is between 0.6 m
+    /// and 2.3 m above the floor. Anything else is phantom geometry (LiDAR multipath under
+    /// a glossy floor paints points below it), so the last good estimate is kept instead.
     private func estimateGround(cameraPosition p0: SIMD3<Float>) -> (Float, GroundSource) {
+        let (ground, source) = estimateGroundRaw(cameraPosition: p0)
+        let below = p0.y - ground
+        if source != .assumed, below >= 0.6, below <= 2.3 { return (ground, source) }
+        if source != .assumed, let last = lastGround, p0.y - last >= 0.6, p0.y - last <= 2.3 {
+            return (last, .meshMedian)
+        }
+        return (p0.y - config.assumedCameraHeight, .assumed)
+    }
+
+    private func estimateGroundRaw(cameraPosition p0: SIMD3<Float>) -> (Float, GroundSource) {
         let cfg = config
 
         // (a) Plane anchors.
