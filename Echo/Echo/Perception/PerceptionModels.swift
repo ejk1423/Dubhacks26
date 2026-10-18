@@ -66,6 +66,63 @@ nonisolated struct PerceptionConfig: Sendable {
     var renderRadius: Float = 4.0              // mesh chunks farther than this are hidden (shader fades out by 4 m)
     var hazardOverlayLift: Float = 0.015       // lift the red overlay above the mesh to avoid z-fighting
     var maxOverlayTriangles: Int = 20_000
+
+    // Ground fallback when nothing is classified as floor (outdoors, fresh scans).
+    var groundFallbackRadius: Float = 1.5      // horizontal radius of mesh vertices used for the height mode
+    var groundFallbackBin: Float = 0.025       // height histogram bin
+    var groundFallbackMinDrop: Float = 0.6     // ground must be at least this far below the phone
+    var groundFallbackMaxDrop: Float = 2.5
+    var groundFallbackMinShare: Float = 0.15   // mode bins must hold this share of all sampled vertices
+    var unclassifiedPlaneMinArea: Float = 2.0  // an unclassified horizontal plane this large, well below the phone, is floor
+    var unclassifiedPlaneMinDrop: Float = 0.8
+
+    // Openings (doorways, gaps between furniture) found by ray casting the occupancy map.
+    var openingMinWidth: Float = 0.7
+    var openingMaxWidth: Float = 3.0
+    var openingMinDistance: Float = 0.5
+    var openingMaxDistance: Float = 2.6        // flanks must be inside the map (`mapRadius`) with room to see past
+    var openingDepth: Float = 0.8              // a gap ray must reach this far past the flanking surfaces
+    var openingFlankTolerance: Float = 0.8     // the two flanks must be at about the same distance (same wall)
+    var openingRayStepDegrees: Float = 3
+    var openingCoarseCells: Int = 3            // map cells per ray-cast cell (walls are sparse at 5 cm)
+    var openingNeedsFloorBeyond = true         // floor seen through the gap, so an unscanned wall is not a door
+    var openingRejectParallelWalls = true      // the space between two corridor walls is not a doorway
+    var openingConfirmFrames: Int = 4
+    var openingMatchRadius: Float = 0.5
+    var openingMissTolerance: Int = 3
+
+    // Moving targets (the thing in the forward corridor).
+    var targetHistoryWindow: TimeInterval = 0.7
+    var targetMinSamples: Int = 5
+    var targetMinSpan: TimeInterval = 0.3
+    var targetJumpReset: Float = 0.6           // a distance jump this big means a different target
+    var targetHeadingReset: Float = 0.26       // radians of heading change that invalidates the history
+    var targetMaxResidual: Float = 0.25        // worst fit residual accepted for a velocity estimate
+    var approachSpeedThreshold: Float = 0.35   // m/s the target itself must move toward the user
+
+    // Edge / drop-off detection (floor ends with nothing beyond, inside the camera's view).
+    var edgeDetectionEnabled = true
+    var edgeMaxDistance: Float = 2.0
+    var edgeMinFloorRows: Int = 2              // well-observed floor rows leading up to the edge
+    var edgeMinEmptyRows: Int = 2              // empty, visible rows past it
+    var edgeFloorFraction: Float = 0.6         // share of a row's columns that must hold floor
+    var edgeEmptyFraction: Float = 0.8         // share of a row's columns that must be empty and visible
+    var edgeMinLiveFloor: Int = 3              // depth returns a cell needs to count as floor seen right now
+    var edgeConfirmFrames: Int = 8
+    var edgeDragTolerance: Float = 0.5         // an edge that follows the user as they walk is a range limit, not an edge
+    var edgeAssumedDepth: Float = 0.5          // elevation reported when nothing is seen below the edge
+    var edgeMinDepthPoints: Int = 2_000        // depth map must be alive for "no return" to mean anything
+
+    // Head band of the forward corridor (signs, branches, open cabinet doors).
+    var headBandMin: Float = 1.5               // height above ground where the head band starts (up to `obstacleMaxHeight`)
+
+    // Path clearance across the walking line.
+    var clearanceNear: Float = 0.5
+    var clearanceFar: Float = 2.0
+    var clearanceMaxLateral: Float = 2.5       // reported width is capped at twice this
+    var clearanceBinSize: Float = 0.1
+    var clearanceMinVertices: Int = 6
+    var clearanceReleaseRate: Float = 2.0      // m/s the clear width may widen (narrowing is instant)
 }
 
 // MARK: - Surface classification
@@ -167,8 +224,29 @@ nonisolated struct ObstacleHit: Sendable, Equatable {
     let bucket: SurfaceBucket
 }
 
+/// A gap in the surroundings wide enough to walk through: a doorway, a corridor mouth,
+/// or the space between two pieces of furniture. Found by casting rays through the
+/// occupancy map and confirmed over several analyses.
+nonisolated struct Opening: Sendable, Identifiable, Equatable {
+    /// Stable across frames while the opening stays roughly in place (rounded world XZ).
+    let id: Int
+    /// World-space centre of the opening line at ground height.
+    let position: SIMD3<Float>
+    /// Radians from the walking heading, right positive.
+    let bearing: Float
+    /// Horizontal distance from the camera to the centre of the opening.
+    let distance: Float
+    /// Metres between the two flanking surfaces.
+    let width: Float
+    /// Both flanks are wall-classified mesh (a doorway) rather than furniture or unknown.
+    let isDoorway: Bool
+    let confidence: Float
+}
+
 nonisolated enum TripHazardKind: Int, Sendable {
-    case drop            // pothole, step down, open stairwell
+    case drop            // pothole, step down, open stairwell; with `vertexCount == 0` an edge
+                         // where observed floor ends and nothing is seen beyond (platform edge,
+                         // stairs down out of LiDAR range), `elevation` then being an assumption
     case bump            // curb, rock, cable, threshold
     case unknownSurface  // no LiDAR return where floor is expected (low confidence)
 }
@@ -245,6 +323,32 @@ nonisolated struct SceneSnapshot: Sendable {
     let walkingSpeed: Float
     let meshAnchorCount: Int
     let vertexCount: Int
+
+    // -- Added fields (defaulted, so the memberwise initializer stays source-compatible).
+
+    /// Walk-through gaps within `PerceptionConfig.openingMaxDistance`, nearest first.
+    var openings: [Opening] = []
+    /// Nearest thing in the forward corridor between shin and `headBandMin` (the body band).
+    var nearestBodyObstacle: ObstacleHit? = nil
+    /// Nearest thing in the forward corridor at head height (`headBandMin`...`obstacleMaxHeight`):
+    /// signs, branches, open cabinet doors. `nearestForwardObstacle` is the nearer of the two bands.
+    var nearestOverheadObstacle: ObstacleHit? = nil
+    /// Speed at which the forward target itself is moving toward the user, m/s, positive when
+    /// approaching, negative when receding, 0 when static or unknown. The user's own walking
+    /// is removed, so a wall reads 0 and a person walking at you reads their walking speed.
+    var targetApproachSpeed: Float = 0
+    /// Rate at which the distance to the forward target is shrinking, m/s (user motion included).
+    var targetClosingSpeed: Float = 0
+    /// `targetApproachSpeed` above `approachSpeedThreshold` for two analyses in a row.
+    var isTargetApproaching: Bool = false
+    /// Clear space to the left / right of the walking line between `clearanceNear` and
+    /// `clearanceFar` ahead, metres, capped at `clearanceMaxLateral`. 0 when blocked straight ahead.
+    var clearDistanceLeft: Float = 0
+    var clearDistanceRight: Float = 0
+    /// `clearDistanceLeft + clearDistanceRight`.
+    var clearWidthAhead: Float = 0
+    /// Height of the camera above the estimated ground, metres.
+    var cameraHeight: Float = 0
 }
 
 // MARK: - Session state
