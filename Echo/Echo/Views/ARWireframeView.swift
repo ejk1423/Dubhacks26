@@ -3,7 +3,8 @@
 //  Echo
 //
 //  SwiftUI wrapper around the single `ARView` owned by `ARLiDARManager`.
-//  The HUD (Step 6) layers status indicators and the emergency controls on top.
+//  `ContentView` layers the HUD on top; the view itself is invisible to VoiceOver
+//  so the hero gauge and controls are the only things it lands on.
 //
 
 import SwiftUI
@@ -14,7 +15,10 @@ struct ARWireframeView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> ARView {
         // The manager owns the view so the AR session survives SwiftUI re-creation.
-        manager.arView
+        let view = manager.arView
+        view.isAccessibilityElement = false
+        view.accessibilityElementsHidden = true
+        return view
     }
 
     func updateUIView(_ uiView: ARView, context: Context) {
