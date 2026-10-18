@@ -268,6 +268,12 @@ final class ARLiDARManager: NSObject {
             for id in result.evicted { renderer.remove(anchorID: id) }
             renderer.updateHazardOverlay(result.overlay)
             renderer.cull(around: result.snapshot.cameraPosition, radius: config.renderRadius)
+            // Red patch on whatever is in the walking corridor within the warning range.
+            if let hit = result.snapshot.nearestForwardObstacle, hit.horizontalDistance <= config.highlightRange {
+                renderer.highlight(point: hit.point, radius: config.highlightRadius)
+            } else {
+                renderer.highlight(point: nil, radius: 0)
+            }
             onSnapshot?(result.snapshot)
             analysisInFlight = false
         }

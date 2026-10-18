@@ -8,7 +8,7 @@
 //
 //  One layout, built for low vision: big and simple, nothing in the way.
 //
-//    Edge      A coloured frame around the screen that grows as the way ahead closes.
+//    Scene     The obstacle the beeps are about is lit red on the LiDAR surfaces.
 //    Top       The map (leading) and, only when something is wrong, one status line.
 //    Bottom    The distance and state in giant type, the prominent Describe button,
 //              and one group of three glass buttons: Repeat, Mute Beeps, Settings.
@@ -40,7 +40,6 @@ struct ContentView: View {
     var body: some View {
         ARWireframeView(manager: manager)
             .ignoresSafeArea()
-            .overlay { ProximityEdge(state: state) }
             .overlay(alignment: .top) { topBar }
             .overlay(alignment: .bottom) { bottomColumn }
             .sheet(isPresented: $showSettings, onDismiss: runFollowUp) {

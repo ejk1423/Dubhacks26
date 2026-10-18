@@ -54,7 +54,20 @@ void echoSurface(realitykit::surface_parameters params)
 
     float alpha = fade * (0.8 + 0.2 * line + 0.4 * ring);
 
-    params.surface().set_base_color(half3(tint));
-    params.surface().set_emissive_color(half3(tint) * half(0.35 * (line + ring)));
+    // Highlight: the custom parameter is (target x, y, z, radius) with radius 0 when
+    // nothing is targeted. Surface within the radius of the target blends to red and
+    // brightens, so the thing the beeps are about is the thing that lights up.
+    float4 target = params.uniforms().custom_parameter();
+    float highlight = 0.0;
+    if (target.w > 0.0) {
+        float dt = distance(p, target.xyz);
+        highlight = 1.0 - smoothstep(target.w * 0.45, target.w, dt);
+    }
+    float3 red = float3(1.0, 0.22, 0.2);
+    float3 color = mix(tint, red, highlight);
+    alpha = max(alpha, highlight * 0.95);
+
+    params.surface().set_base_color(half3(color));
+    params.surface().set_emissive_color(half3(color) * half(0.35 * (line + ring) + 0.6 * highlight));
     params.surface().set_opacity(half(saturate(alpha)));
 }

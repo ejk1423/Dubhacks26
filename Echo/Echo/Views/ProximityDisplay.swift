@@ -3,13 +3,12 @@
 //  Echo
 //
 //  The way ahead, as big as the screen allows and with nothing in the way: the
-//  distance in giant type, the state as a word with a symbol, and a coloured frame
-//  around the screen edge that thickens as the thing ahead gets closer, so low-vision
-//  users read it peripherally without looking at any one spot.
+//  distance in giant type and the state as a word with a symbol. The obstacle itself
+//  is lit red in the scene (SurfaceRenderer.highlight), so the eye is drawn to the
+//  thing, not to a gauge.
 //
-//  No card, no ring, no morphing text: values swap instantly, only the frame's opacity
-//  eases (and not under Reduce Motion). Colour is never the only carrier: every state
-//  has its word and its symbol (HIG › Accessibility).
+//  No card, no ring, no morphing text: values swap instantly. Colour is never the only
+//  carrier: every state has its word and its symbol (HIG › Accessibility).
 //
 
 import SwiftUI
@@ -65,34 +64,5 @@ struct ProximityDisplay: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(state.accessibilityLabel)
         .accessibilityAddTraits(.updatesFrequently)
-    }
-}
-
-/// Coloured frame along the screen edge: invisible when clear, thickening and
-/// brightening in the state colour as the way ahead closes. Peripheral, not obstructive.
-struct ProximityEdge: View {
-    let state: ProximityState
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    private var strength: Double {
-        switch state.kind {
-        case .starting, .clear: return 0
-        case .hazard, .edge: return 0.9
-        case .floorObject: return 0.6
-        case .ahead, .slow, .stop: return 0.25 + 0.7 * Double(state.closeness)
-        }
-    }
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: 58, style: .continuous)
-            .strokeBorder(state.color, lineWidth: reduceTransparency ? 8 : 10 + 16 * strength)
-            .blur(radius: reduceTransparency ? 0 : 12)
-            .opacity(strength)
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: strength)
     }
 }
