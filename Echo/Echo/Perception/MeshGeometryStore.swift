@@ -576,6 +576,15 @@ actor MeshGeometryStore {
                 }
             }
 
+            // A step or curb spans the path and has nothing standing on it. A one-cell ridge
+            // is clutter (a cable, a chair leg), and elevated floor with solid geometry above
+            // it is the foot of a wall or a piece of furniture, not something to step onto.
+            if kind != .unknown {
+                let columns = Set(members.map { $0 % nS })
+                let underSomething = members.contains { cells[$0].obstacleCount >= cfg.minHazardVertices }
+                if columns.count < cfg.minHazardWidthCells || underSomething { continue }
+            }
+
             var position = SIMD3<Float>(repeating: 0)
             var count = 0
             var elevation: Float = 0

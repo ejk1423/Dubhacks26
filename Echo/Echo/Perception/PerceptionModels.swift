@@ -25,11 +25,12 @@ nonisolated struct PerceptionConfig: Sendable {
 
     // Elevation thresholds relative to the locally estimated ground plane.
     var dropThreshold: Float = 0.12        // pothole / step down (negative elevation)
-    var bumpThreshold: Float = 0.08        // curb / rock / cable (positive elevation)
+    var bumpThreshold: Float = 0.10        // curb / step (positive elevation)
     var maxTripHeight: Float = 0.35        // taller than this is an obstacle (sonar), not a trip hazard
     var minHazardVertices: Int = 8         // per-cell noise rejection
     var minHazardFraction: Float = 0.4     // drop/bump vertices as a share of the cell's floor-ish vertices
-    var hazardConfirmFrames: Int = 3       // consecutive analyses a hazard must persist before it is reported
+    var hazardConfirmFrames: Int = 5       // consecutive analyses a hazard must persist before it is reported
+    var minHazardWidthCells: Int = 2       // a step spans the path; a ridge one cell wide is clutter
     var hazardMatchRadius: Float = 0.3     // max centroid movement for a hazard to count as the same one
     var reportUnknownSurfaces = false      // LiDAR gaps are common at range; too noisy to report
     var unknownSurfaceMaxDistance: Float = 2.0

@@ -79,7 +79,12 @@ final class Narrator {
             case .bump: line = "Step up"
             case .unknownSurface: line = "Careful, uneven ground"
             }
-            if say(line, key: "hazard", every: 4, interrupt: true, now: now) { return }
+            // Once per hazard (ids are stable while it stays put), and never two in quick succession.
+            if lastSpoken["hazard"].map({ now - $0 >= 3 }) ?? true,
+               say(line, key: "hazard:\(hazard.id)", every: 12, interrupt: true, now: now) {
+                lastSpoken["hazard"] = now
+                return
+            }
         }
 
         let fresh = vision.flatMap { now - $0.timestamp < 1.0 ? $0 : nil }
