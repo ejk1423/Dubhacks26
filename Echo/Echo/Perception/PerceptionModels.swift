@@ -47,19 +47,20 @@ nonisolated struct PerceptionConfig: Sendable {
     var obstacleMaxRange: Float = 3.0      // reliable LiDAR range; beyond this the sonar reports clear
     var obstacleBinSize: Float = 0.1
     var minObstacleVertices: Int = 8       // vertices in one sector/distance bin before it counts as an obstacle
-    var obstacleReleaseRate: Float = 0.5   // m/s a sector reading may recede (approaching is instant)
+    var obstacleReleaseRate: Float = 3.0   // m/s a sector reading may recede (approaching is instant)
+    var ghostMargin: Float = 0.3           // mesh the depth camera sees this far past is stale and ignored
     var chunkEvictionRadius: Float = 15.0  // stored mesh farther than this is dropped
     var forwardHalfWidth: Float = 0.4      // half-width of the walking corridor (shoulder width)
     var depthSampleStep: Int = 1           // sample every Nth depth-map pixel for the sonar and map
-    var mapRadius: Float = 4.0             // half-size of the top-down occupancy map
-    var mapCellSize: Float = 0.1
-    var mapMinVertices: Int = 3            // mesh vertices a cell needs before it counts
-    var depthFOVHalfAngle: Float = 0.35    // radians; mesh hits inside this cone defer to the depth map
+    var mapRadius: Float = 3.0             // half-size of the top-down occupancy map
+    var mapCellSize: Float = 0.05
+    var mapMinVertices: Int = 2            // mesh vertices a cell needs before it counts
+    var depthFOVHalfAngle: Float = 0.45    // radians; mesh hits inside this cone defer to the depth map
 
     // Scheduling and rendering.
-    var analysisInterval: TimeInterval = 0.08  // ~12 Hz hazard + sonar + map analysis
-    var maxAnchorUpdatesPerFrame: Int = 1      // mesh anchors converted per ARFrame (60 Hz)
-    var maxUpsertsInFlight: Int = 2            // chunks queued on the store before ingestion waits
+    var analysisInterval: TimeInterval = 0.05  // 20 Hz hazard + sonar + map analysis
+    var maxAnchorUpdatesPerFrame: Int = 2      // mesh anchors converted per ARFrame (60 Hz)
+    var maxUpsertsInFlight: Int = 3            // chunks queued on the store before ingestion waits
     var renderRadius: Float = 3.5              // mesh chunks farther than this are hidden (shader fades out by 3.5 m)
     var hazardOverlayLift: Float = 0.015       // lift the red overlay above the mesh to avoid z-fighting
     var maxOverlayTriangles: Int = 20_000

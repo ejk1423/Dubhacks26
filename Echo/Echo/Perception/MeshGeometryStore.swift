@@ -21,8 +21,9 @@
 //  The sonar fuses two sources: the accumulated mesh (full 360 degrees, but smoothed
 //  and a second or so behind reality) and the live LiDAR depth map (camera field of
 //  view only, but dense and instantaneous). Inside the depth map's cone the corridor
-//  trusts the depth map, so stale mesh never triggers a collision warning and a person
-//  stepping in front is seen on the next analysis.
+//  trusts the depth map, and any mesh the camera can currently see past is treated as
+//  stale, so a person stepping in front is seen on the next analysis and stops
+//  counting the moment they walk on.
 //
 //  Only `Sendable` value types cross into or out of this actor.
 //
@@ -355,13 +356,26 @@ actor MeshGeometryStore {
         var bins = SonarBins(nSectors: nSectors, nBins: nBins, config: cfg)
 
         // Live depth map: no classes, but every point is a real surface seen this frame.
+        // Also build a 1-degree profile of the nearest body-height depth per bearing: any
+        // mesh the camera currently sees *past* (a person who has walked on, a chair that
+        // moved) is stale and must not count, however recently the mesh was updated.
+        var profile = [Float](repeating: .infinity, count: 360)
         for v in depthPoints {
             let dy = v.y - ground
             guard dy >= cfg.obstacleMinHeight, dy <= cfg.obstacleMaxHeight else { continue }
             let d = v - p0
-            bins.accumulate(v, MeshClass.none,
-                            t: d.x * heading.x + d.z * heading.z,
-                            s: d.x * right.x + d.z * right.z, fromDepth: true)
+            let t = d.x * heading.x + d.z * heading.z
+            let s = d.x * right.x + d.z * right.z
+            let dist = (t * t + s * s).squareRoot()
+            let bin = Self.bearingBin(t: t, s: s)
+            if dist < profile[bin] { profile[bin] = dist }
+            bins.accumulate(v, MeshClass.none, t: t, s: s, fromDepth: true)
+        }
+        let depthProfile = profile
+        let ghostMargin = cfg.ghostMargin
+        func isGhost(t: Float, s: Float) -> Bool {
+            let seen = depthProfile[Self.bearingBin(t: t, s: s)]
+            return seen.isFinite && (t * t + s * s).squareRoot() < seen - ghostMargin
         }
 
         // Top-down occupancy map (world-aligned grid centred on the user).
@@ -406,16 +420,16 @@ actor MeshGeometryStore {
                         let s = d.x * right.x + d.z * right.z       // right
 
                         // -- Wall sonar: anything solid between shin and head height.
-                        if sonarRelevant,
-                           dy >= cfg.obstacleMinHeight, dy <= cfg.obstacleMaxHeight,
-                           c != MeshClass.floor, c != MeshClass.ceiling {
+                        let solid = dy >= cfg.obstacleMinHeight && dy <= cfg.obstacleMaxHeight
+                            && c != MeshClass.floor && c != MeshClass.ceiling
+                        let stale = solid && isGhost(t: t, s: s)
+                        if sonarRelevant, solid, !stale {
                             bins.accumulate(v, c, t: t, s: s, fromDepth: false)
                         }
 
                         // -- Occupancy map: solid things at body height, and the floor.
-                        if mapRelevant, let idx = mapIndex(v) {
-                            if dy >= cfg.obstacleMinHeight, dy <= cfg.obstacleMaxHeight,
-                               c != MeshClass.floor, c != MeshClass.ceiling {
+                        if mapRelevant, !stale, let idx = mapIndex(v) {
+                            if solid {
                                 mapObstacle[idx] += 1
                                 if c != MeshClass.none { mapObstacleClass[idx] = c }
                             } else if c == MeshClass.floor || abs(dy) < 0.15 {
@@ -795,6 +809,12 @@ actor MeshGeometryStore {
     }
 
     // MARK: Geometry helpers
+
+    /// 1-degree bearing bin (0 = directly behind, 180 = ahead) for the depth profile.
+    private static func bearingBin(t: Float, s: Float) -> Int {
+        let degrees = atan2(s, t) * 180 / .pi + 180
+        return min(359, max(0, Int(degrees)))
+    }
 
     private static func overlaps(_ aMin: SIMD3<Float>, _ aMax: SIMD3<Float>,
                                  _ bMin: SIMD3<Float>, _ bMax: SIMD3<Float>) -> Bool {

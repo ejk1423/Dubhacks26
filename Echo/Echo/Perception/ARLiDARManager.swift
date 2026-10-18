@@ -151,7 +151,13 @@ final class ARLiDARManager: NSObject {
     }
 
     private func run(options: ARSession.RunOptions) {
-        arView.session.run(makeConfiguration(), options: options)
+        let configuration = makeConfiguration()
+        for format in ARWorldTrackingConfiguration.supportedVideoFormats {
+            print("ARKit video format: \(format.captureDeviceType.rawValue) \(Int(format.imageResolution.width))x\(Int(format.imageResolution.height)) @\(format.framesPerSecond)")
+        }
+        let chosen = configuration.videoFormat
+        print("ARKit using: \(chosen.captureDeviceType.rawValue) \(Int(chosen.imageResolution.width))x\(Int(chosen.imageResolution.height)) @\(chosen.framesPerSecond)")
+        arView.session.run(configuration, options: options)
     }
 
     private func applyBackground() {

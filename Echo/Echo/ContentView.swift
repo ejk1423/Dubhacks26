@@ -72,7 +72,7 @@ struct ContentView: View {
                     alertRange: audio.alertRange,
                     accent: zoneColor
                 )
-                .frame(width: 148, height: 148)
+                .frame(width: 168, height: 168)
                 .glass(cornerRadius: 20)
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -102,8 +102,7 @@ struct ContentView: View {
     // MARK: Footer: proximity gauge + controls
 
     private var footer: some View {
-        @Bindable var audio = audio
-        return VStack(spacing: 18) {
+        VStack(spacing: 18) {
             ProximityGauge(closeness: audio.closeness, distance: audio.targetDistance,
                            active: running, color: hazard == nil ? zoneColor : Theme.danger)
                 .frame(width: 168, height: 168)
@@ -113,20 +112,16 @@ struct ContentView: View {
                 .foregroundStyle(.white)
                 .contentTransition(.interpolate)
 
-            HStack(spacing: 14) {
+            HStack(spacing: 22) {
                 IconToggle(symbol: audio.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
                            active: !audio.isMuted) { audio.isMuted.toggle() }
-                Slider(value: $audio.masterVolume, in: 0...1)
-                    .tint(.white)
-                    .disabled(audio.isMuted)
-                    .opacity(audio.isMuted ? 0.4 : 1)
                 IconToggle(symbol: "iphone.radiowaves.left.and.right",
                            active: audio.hapticsEnabled) { audio.hapticsEnabled.toggle() }
                 IconToggle(symbol: "arrow.counterclockwise", active: true) { manager.reset() }
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 18)
             .padding(.vertical, 10)
-            .glass(cornerRadius: 26)
+            .glass(cornerRadius: 30)
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 14)
@@ -283,7 +278,7 @@ private struct MinimapView: View {
             }
 
             let map = snap.map
-            let cell = CGFloat(map.cellSize) * scale + 0.4
+            let cell = CGFloat(map.cellSize) * scale + 0.3
             var floor = Path(), walls = Path(), furniture = Path(), obstacles = Path(), live = Path()
             for row in 0..<map.size {
                 for column in 0..<map.size {
