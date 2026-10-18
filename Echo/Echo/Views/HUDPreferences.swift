@@ -3,7 +3,7 @@
 //  Echo
 //
 //  Everything the user can set from the HUD, persisted in UserDefaults so the app
-//  comes back the way it was left: simple mode, camera feed, sound toggles and
+//  comes back the way it was left: camera feed, sound toggles and
 //  whether the tutorial has been seen.
 //
 
@@ -34,7 +34,6 @@ nonisolated enum CameraFeedPreference: String, CaseIterable, Hashable, Sendable 
 final class HUDPreferences {
 
     private enum Key {
-        static let simpleMode = "echo.simpleMode"
         static let hasSeenOnboarding = "echo.hasSeenOnboarding"
         static let cameraFeed = "echo.cameraFeed"
         static let beeps = "echo.beeps"
@@ -44,8 +43,6 @@ final class HUDPreferences {
         static let volume = "echo.volume"
     }
 
-    /// Only the giant proximity state and the Describe button: the blind-user layout.
-    var simpleMode: Bool { didSet { defaults.set(simpleMode, forKey: Key.simpleMode) } }
     var hasSeenOnboarding: Bool { didSet { defaults.set(hasSeenOnboarding, forKey: Key.hasSeenOnboarding) } }
     var cameraFeed: CameraFeedPreference { didSet { defaults.set(cameraFeed.rawValue, forKey: Key.cameraFeed) } }
     var beeps: Bool { didSet { defaults.set(beeps, forKey: Key.beeps) } }
@@ -59,7 +56,6 @@ final class HUDPreferences {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        simpleMode = defaults.bool(forKey: Key.simpleMode)
         hasSeenOnboarding = defaults.bool(forKey: Key.hasSeenOnboarding)
         cameraFeed = CameraFeedPreference(rawValue: defaults.string(forKey: Key.cameraFeed) ?? "") ?? .full
         beeps = defaults.object(forKey: Key.beeps) as? Bool ?? true

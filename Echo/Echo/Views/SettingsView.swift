@@ -136,10 +136,6 @@ struct SettingsView: View {
 
     private var displaySection: some View {
         Section {
-            Toggle(isOn: $prefs.simpleMode) {
-                Label("Simple Mode", systemImage: "textformat.size.larger")
-            }
-            .onChange(of: prefs.simpleMode) { Haptics.select() }
             Picker(selection: $prefs.cameraFeed) {
                 ForEach(CameraFeedPreference.allCases, id: \.self) { option in
                     Text(option.title).tag(option)
@@ -154,7 +150,7 @@ struct SettingsView: View {
         } header: {
             Text("Display")
         } footer: {
-            Text("Simple Mode shows only the way ahead in large type and the Describe button. Detail Mode adds the map and what the camera sees, for sighted testers. Dim or switch off the camera to see the LiDAR surfaces on black.")
+            Text("Dim or switch off the camera to see the LiDAR surfaces on black.")
         }
     }
 

@@ -125,7 +125,7 @@ struct MinimapButton: View {
     let alertRange: Float
     let action: () -> Void
 
-    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 96
+    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 156
 
     var body: some View {
         Button {
@@ -133,7 +133,7 @@ struct MinimapButton: View {
             action()
         } label: {
             MinimapView(snapshot: snapshot, radius: radius, coneHalfAngle: coneHalfAngle, alertRange: alertRange)
-                .frame(width: min(size, 140), height: min(size, 140))
+                .frame(width: min(size, 200), height: min(size, 200))
                 .contentShape(.circle)
         }
         .buttonStyle(.plain)

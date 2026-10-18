@@ -3,7 +3,7 @@
 //  Echo
 //
 //  Heading-up blueprint of the room: the occupancy map rasterised once per snapshot
-//  into a CGImage (one draw call instead of thousands of rects), the nearest surface
+//  into a CGImage (one draw call instead of thousands of rects, drawn crisp), the nearest surface
 //  per 15-degree sector as an arc, the alert cone, range rings and an "ahead" marker.
 //
 //  The drawing is monochrome plus the app accent (HIG › Color: the three state colours
@@ -100,7 +100,9 @@ struct MinimapView: View {
         let palette: MinimapPalette = colorScheme == .dark ? .dark : .light
         if let image = cache.image(for: map, timestamp: snap.timestamp, palette: palette) {
             let side = CGFloat(map.size) * CGFloat(map.cellSize) * scale
-            world.draw(image, in: CGRect(origin: point(map.origin.x, map.origin.y), size: CGSize(width: side, height: side)))
+            // Nearest-neighbour: every 2.5 cm cell stays a crisp square instead of a blur.
+            world.draw(image.interpolation(.none),
+                       in: CGRect(origin: point(map.origin.x, map.origin.y), size: CGSize(width: side, height: side)))
         }
 
         let coneR = CGFloat(alertRange) * scale

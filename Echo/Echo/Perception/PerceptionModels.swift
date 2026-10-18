@@ -54,8 +54,8 @@ nonisolated struct PerceptionConfig: Sendable {
     var forwardHalfWidth: Float = 0.4      // half-width of the walking corridor (shoulder width)
     var depthSampleStep: Int = 1           // sample every Nth depth-map pixel for the sonar and map
     var mapRadius: Float = 3.0             // half-size of the top-down occupancy map
-    var mapCellSize: Float = 0.05
-    var mapMinVertices: Int = 2            // mesh vertices a cell needs before it counts
+    var mapCellSize: Float = 0.025
+    var mapMinVertices: Int = 1            // mesh vertices a cell needs before it counts
     var depthFOVHalfAngle: Float = 0.45    // radians; mesh hits inside this cone defer to the depth map
 
     // Scheduling and rendering.
@@ -84,7 +84,7 @@ nonisolated struct PerceptionConfig: Sendable {
     var openingDepth: Float = 0.8              // a gap ray must reach this far past the flanking surfaces
     var openingFlankTolerance: Float = 0.8     // the two flanks must be at about the same distance (same wall)
     var openingRayStepDegrees: Float = 3
-    var openingCoarseCells: Int = 3            // map cells per ray-cast cell (walls are sparse at 5 cm)
+    var openingCoarseCells: Int = 6            // map cells per ray-cast cell (15 cm; walls are sparse at 2.5 cm)
     var openingNeedsFloorBeyond = true         // floor seen through the gap, so an unscanned wall is not a door
     var openingRejectParallelWalls = true      // the space between two corridor walls is not a doorway
     var openingConfirmFrames: Int = 4

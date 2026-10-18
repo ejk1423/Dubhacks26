@@ -4,21 +4,19 @@
 //
 //  The HUD. Wires the perception manager to the audio engine and narrator, derives
 //  one `ProximityState` from them, and lays it out over the camera in two layers
-//  (HIG › Materials): the AR view is content; a handful of Liquid Glass elements
-//  float above it.
+//  (HIG › Materials): the AR view is content; a handful of elements float above it.
 //
-//    Top       Detail mode: the small map (leading) and one status line (trailing).
-//              Simple mode: the status line only, and only when there is a problem.
-//    Bottom    The proximity gauge (the single focal point), the prominent Describe
-//              button, and one group of three glass buttons: Repeat, Mute Beeps,
-//              Settings. All in the bottom third, within thumb reach.
+//  One layout, built for low vision: big and simple, nothing in the way.
+//
+//    Edge      A coloured frame around the screen that grows as the way ahead closes.
+//    Top       The map (leading) and, only when something is wrong, one status line.
+//    Bottom    The distance and state in giant type, the prominent Describe button,
+//              and one group of three glass buttons: Repeat, Mute Beeps, Settings.
+//              All in the bottom third, within thumb reach.
 //
 //  Settings and the full map are sheets; the tutorial is a full-screen cover. Only
 //  one is shown at a time (HIG › Sheets): a request made from inside Settings is
 //  carried out after that sheet has gone.
-//
-//  Pieces live under Views/: HUDStyle, ProximityState, ProximityGauge, HUDBar,
-//  MinimapView (+ MapView), OnboardingView, SettingsView, HUDPreferences.
 //
 
 import SwiftUI
@@ -42,6 +40,7 @@ struct ContentView: View {
     var body: some View {
         ARWireframeView(manager: manager)
             .ignoresSafeArea()
+            .overlay { ProximityEdge(state: state) }
             .overlay(alignment: .top) { topBar }
             .overlay(alignment: .bottom) { bottomColumn }
             .sheet(isPresented: $showSettings, onDismiss: runFollowUp) {
@@ -58,7 +57,6 @@ struct ContentView: View {
                     showOnboarding = false
                 }
             }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: prefs.simpleMode)
             .onAppear(perform: startUp)
             .onDisappear {
                 manager.pause()
@@ -117,36 +115,6 @@ struct ContentView: View {
                             closeness: audio.closeness, distance: audio.targetDistance)
     }
 
-    private var freshVision: VisionReport? {
-        guard let report = manager.visionReport,
-              ProcessInfo.processInfo.systemUptime - report.timestamp < 1 else { return nil }
-        return report
-    }
-
-    /// People / animals the camera sees in front, nearest first.
-    private var peopleAhead: [VisionDetection] {
-        (freshVision?.detections ?? [])
-            .filter { abs($0.bearing) <= 0.9 }
-            .sorted { ($0.distance ?? 99) < ($1.distance ?? 99) }
-    }
-
-    /// Second line under the state (Detail mode): the last spoken line for a few
-    /// seconds, else what is ahead by name.
-    private var detailLine: String? {
-        if let spoken = narrator.lastLine, ProcessInfo.processInfo.systemUptime - narrator.lastLineTime < 6 {
-            return spoken
-        }
-        if let person = peopleAhead.first {
-            if let d = person.distance { return String(format: "%@ · %.1f m", person.label, d) }
-            return person.label
-        }
-        if audio.closeness > 0.3, let report = freshVision, let label = report.labelAhead, report.labelConfidence >= 0.3 {
-            return label
-        }
-        if let sign = freshVision?.signs.first { return "Sign: \(sign)" }
-        return nil
-    }
-
     private var statusMessage: String? {
         switch manager.status {
         case .running: return nil
@@ -159,49 +127,28 @@ struct ContentView: View {
         }
     }
 
-    /// The one thing worth a line at the top right now, most important first. Problems
-    /// in both modes; what the camera sees only in Detail mode (HIG › Designing for iOS:
-    /// "limiting the number of onscreen controls while making secondary details ...
-    /// discoverable").
+    /// Only problems earn a line at the top; when all is well there is nothing to read.
     private var statusLine: (symbol: String, text: String)? {
         if let statusMessage { return ("exclamationmark.circle", statusMessage) }
         if !manager.capabilities.hasLiDAR { return ("sensor.fill", "No LiDAR on this device") }
         if !audio.headphonesConnected { return ("headphones", "No headphones") }
         if running, !floorFound { return ("square.stack.3d.down.right", "Finding the floor") }
-        guard !prefs.simpleMode else { return nil }
-        if let person = peopleAhead.first(where: \.movingTowardYou) {
-            return ("figure.walk.motion", person.distance.map { String(format: "%@ coming · %.1f m", person.label, $0) } ?? "\(person.label) coming")
-        }
-        if let person = peopleAhead.first {
-            return ("figure.stand", person.distance.map { String(format: "%@ · %.1f m", person.label, $0) } ?? person.label)
-        }
-        if let overhead = snapshot?.nearestOverheadObstacle, overhead.horizontalDistance < 1.5 {
-            return ("arrow.down.to.line", String(format: "Low overhead · %.1f m", overhead.horizontalDistance))
-        }
-        if let door = snapshot?.openings.first(where: \.isDoorway) {
-            let side = door.bearing < -0.4 ? "left" : (door.bearing > 0.4 ? "right" : "ahead")
-            return ("door.left.hand.open", String(format: "Doorway %@ · %.1f m", side, door.distance))
-        }
-        if let scene = freshVision?.scene { return ("eye", scene) }
         return nil
     }
 
     // MARK: Top
 
     @ViewBuilder private var topBar: some View {
-        // Side by side when the status fits; stacked at large text sizes
-        // (HIG › Typography: "consider using a stacked layout").
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: HUDMetrics.spacing) {
-                minimap
-                Spacer(minLength: 0)
-                status
+        HStack(alignment: .top, spacing: HUDMetrics.spacing) {
+            MinimapButton(snapshot: snapshot, radius: manager.config.mapRadius,
+                          coneHalfAngle: audio.coneHalfAngle, alertRange: audio.alertRange) {
+                showMap = true
             }
-            // No Spacer here: in an overlay it would stretch to the full height.
-            VStack(alignment: .leading, spacing: HUDMetrics.spacingSmall) {
-                minimap
-                status
+            if let line = statusLine {
+                StatusLine(symbol: line.symbol, text: line.text)
+                    .transition(.opacity)
             }
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, HUDMetrics.margin)
         .padding(.top, HUDMetrics.spacingSmall)
@@ -213,27 +160,11 @@ struct ContentView: View {
         .accessibilitySortPriority(0)
     }
 
-    @ViewBuilder private var minimap: some View {
-        if !prefs.simpleMode {
-            MinimapButton(snapshot: snapshot, radius: manager.config.mapRadius,
-                          coneHalfAngle: audio.coneHalfAngle, alertRange: audio.alertRange) {
-                showMap = true
-            }
-        }
-    }
-
-    @ViewBuilder private var status: some View {
-        if let line = statusLine {
-            StatusLine(symbol: line.symbol, text: line.text)
-                .transition(.opacity)
-        }
-    }
-
     // MARK: Bottom
 
     @ViewBuilder private var bottomColumn: some View {
-        VStack(spacing: HUDMetrics.spacing) {
-            ProximityGauge(state: state, detail: prefs.simpleMode ? nil : detailLine, large: prefs.simpleMode)
+        VStack(spacing: HUDMetrics.spacingLarge) {
+            ProximityDisplay(state: state)
                 .accessibilitySortPriority(3)
             DescribeButton(enabled: running) {
                 narrator.describe(snapshot: snapshot, vision: manager.visionReport)
@@ -244,7 +175,16 @@ struct ContentView: View {
         }
         .frame(maxWidth: HUDMetrics.maxColumnWidth)
         .padding(.horizontal, HUDMetrics.margin)
+        .padding(.top, HUDMetrics.spacingLarge * 2)
         .padding(.bottom, HUDMetrics.spacingSmall)
+        .frame(maxWidth: .infinity)
+        // A standard scrim behind text over media, as Photos and video players do; it
+        // dims only the bottom of the camera, never the room ahead.
+        .background(
+            LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+        )
         .environment(\.colorScheme, .dark)
         .accessibilitySortPriority(1)
     }
