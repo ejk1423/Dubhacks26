@@ -190,6 +190,9 @@ final class SpatialAudioEngine {
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            // A longer I/O buffer gives the synthesizer and the engine headroom under load;
+            // crackly speech is the sound of buffers arriving late.
+            try? session.setPreferredIOBufferDuration(0.023)
             try session.setActive(true)
             updateRoute()
 

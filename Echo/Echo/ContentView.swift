@@ -20,7 +20,6 @@
 //  carried out after that sheet has gone.
 //
 
-import ARKit
 import SwiftUI
 
 struct ContentView: View {
@@ -29,7 +28,6 @@ struct ContentView: View {
     @State private var narrator = Narrator()
     @State private var prefs = HUDPreferences()
     @State private var announcer = StatusAnnouncer()
-    @State private var feed = CameraFeedRenderer()
 
     @State private var showSettings = false
     @State private var showMap = false
@@ -41,13 +39,8 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ZStack {
-            // Greyscale camera underneath; the AR view above it is transparent and draws
-            // only the coloured LiDAR surfaces.
-            CameraFeedView(renderer: feed)
-            ARWireframeView(manager: manager)
-        }
-        .ignoresSafeArea()
+        ARWireframeView(manager: manager)
+            .ignoresSafeArea()
             .overlay(alignment: .topTrailing) { mapPanel }
             .overlay(alignment: .bottom) { bottomColumn }
             .sheet(isPresented: $showSettings, onDismiss: runFollowUp) {
@@ -77,10 +70,7 @@ struct ContentView: View {
             .onChange(of: audio.hapticsEnabled) { prefs.haptics = audio.hapticsEnabled }
             .onChange(of: audio.hapticsOnly) { prefs.hapticsOnly = audio.hapticsOnly }
             .onChange(of: narrator.isEnabled) { prefs.voice = narrator.isEnabled }
-            .onChange(of: prefs.cameraFeed) {
-                manager.setCameraFeed(prefs.cameraFeed.mode)
-                feed.brightness = prefs.cameraFeed.feedBrightness
-            }
+            .onChange(of: prefs.cameraFeed) { manager.setCameraFeed(prefs.cameraFeed.mode) }
     }
 
     // MARK: Lifecycle
@@ -92,8 +82,6 @@ struct ContentView: View {
             narrator.update(snapshot: snapshot, vision: manager.visionReport,
                             closeness: audio.closeness, targetDistance: audio.targetDistance)
         }
-        manager.onFrame = { [feed] frame in feed.submit(frame.capturedImage) }
-        feed.brightness = prefs.cameraFeed.feedBrightness
         narrator.audio = audio
         audio.isMuted = !prefs.beeps
         audio.masterVolume = prefs.volume

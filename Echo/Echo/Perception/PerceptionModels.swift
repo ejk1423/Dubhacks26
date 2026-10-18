@@ -60,7 +60,7 @@ nonisolated struct PerceptionConfig: Sendable {
 
     // Scheduling and rendering.
     var analysisInterval: TimeInterval = 0.05  // 20 Hz hazard + sonar + map analysis
-    var visionFrameStride: Int = 12            // run Vision on every Nth ARFrame (60 Hz -> 5 Hz)
+    var visionFrameStride: Int = 15            // run Vision on every Nth ARFrame (60 Hz -> 4 Hz)
     var maxAnchorUpdatesPerFrame: Int = 2      // mesh anchors converted per ARFrame (60 Hz)
     var maxUpsertsInFlight: Int = 3            // chunks queued on the store before ingestion waits
     var renderRadius: Float = 4.0              // mesh chunks farther than this are hidden (shader fades out by 4 m)
@@ -393,8 +393,6 @@ nonisolated enum CameraFeedMode: Sendable, Equatable {
     /// Camera feed darkened by `ev` stops (negative values dim). -2.5 reads as a night-vision feed.
     case dimmed(ev: Float)
     case full
-    /// No ARKit background at all: the app draws the camera itself underneath (greyscale).
-    case transparent
 }
 
 // MARK: - simd helpers
