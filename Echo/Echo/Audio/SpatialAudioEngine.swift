@@ -3,9 +3,11 @@
 //  Echo
 //
 //  Parking-sensor style collision warning, driven by `SceneSnapshot`s. One target: the
-//  nearest surface inside a forward cone (`coneHalfAngle`) within `alertRange`. Beyond
-//  `imminentRange` it only beeps while the user is actually closing in on the target;
-//  inside, always. Beeps are soft and low until the last stretch, where they get faster,
+//  nearest surface inside a forward cone (`coneHalfAngle`) within the alert range. The
+//  range grows with walking speed (`leadTime` seconds of travel, at least `alertRange`),
+//  so a brisk walker is warned earlier than someone shuffling. Beyond `imminentRange` it
+//  only beeps while the user is actually closing in on the target; inside, always.
+//  Beeps duck while the narrator is speaking. Beeps are soft and low until the last stretch, where they get faster,
 //  louder and higher, going solid near contact. Nothing beside or behind the user makes
 //  a sound, and silence means the way ahead is clear. Trip hazards are spoken by
 //  `Narrator`, not beeped.
@@ -35,6 +37,8 @@ final class SpatialAudioEngine {
     var isMuted = false
     var masterVolume: Float = 0.8
     var hapticsEnabled = true
+    /// Set while speech is playing so beeps drop under it.
+    var ducked = false
     private(set) var isRunning = false
     private(set) var headphonesConnected = false
     /// 0 (nothing in range) ... 1 (at contact) for the current target.
@@ -44,7 +48,9 @@ final class SpatialAudioEngine {
 
     // MARK: Tuning
 
-    @ObservationIgnored let alertRange: Float = 1.0             // metres; silent beyond
+    @ObservationIgnored let alertRange: Float = 1.0             // metres; minimum range
+    @ObservationIgnored let leadTime: Float = 1.6               // seconds of travel the range covers when walking
+    @ObservationIgnored let maxRange: Float = 2.2
     @ObservationIgnored let imminentRange: Float = 0.45         // metres; inside this beep even when standing still
     @ObservationIgnored let closingSpeedThreshold: Float = 0.1  // m/s toward the target before beeping
     @ObservationIgnored let touchDistance: Float = 0.3          // metres; solid tone at or inside
@@ -172,7 +178,7 @@ final class SpatialAudioEngine {
         // Nearest surface in the forward cone.
         var target: (hit: ObstacleHit, bearing: Float)?
         func consider(_ hit: ObstacleHit?) {
-            guard let hit, hit.horizontalDistance <= alertRange else { return }
+            guard let hit, hit.horizontalDistance <= maxRange else { return }
             let bearing = self.bearing(of: hit.point, in: snap)
             guard abs(bearing) <= coneHalfAngle,
                   hit.horizontalDistance < (target?.hit.horizontalDistance ?? .infinity) else { return }
@@ -188,7 +194,8 @@ final class SpatialAudioEngine {
             return
         }
         let distance = target.hit.horizontalDistance
-        let c = min(1, max(0, (alertRange - distance) / (alertRange - touchDistance)))
+        let range = min(maxRange, max(alertRange, snap.walkingSpeed * leadTime))
+        let c = min(1, max(0, (range - distance) / (range - touchDistance)))
         closeness = c
         targetDistance = distance
 
@@ -212,7 +219,8 @@ final class SpatialAudioEngine {
         let urgency = c * c * c
         let beep = Self.beep(rate: stereo.sampleRate, frequency: 620 + 680 * Double(urgency),
                              duration: c > 0.95 ? 0.10 : 0.05)
-        beepPlayer.scheduleBuffer(render(beep, azimuth: target.bearing, gain: 0.18 + 0.72 * c * c), completionHandler: nil)
+        let gain = (0.18 + 0.72 * c * c) * (ducked ? 0.4 : 1)
+        beepPlayer.scheduleBuffer(render(beep, azimuth: target.bearing, gain: gain), completionHandler: nil)
         if hapticsEnabled { haptic.impactOccurred(intensity: CGFloat(0.3 + 0.7 * c)) }
     }
 

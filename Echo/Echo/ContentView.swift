@@ -6,16 +6,20 @@ struct ContentView: View {
     @State private var manager = ARLiDARManager()
     @State private var audio = SpatialAudioEngine()
     @State private var narrator = Narrator()
+    @State private var showSettings = false
 
     var body: some View {
         ARWireframeView(manager: manager)
             .ignoresSafeArea()
             .overlay(alignment: .top) { header }
             .overlay(alignment: .bottom) { footer }
+            .sheet(isPresented: $showSettings) { settings }
             .onAppear {
                 manager.onSnapshot = { [audio, narrator, manager] snapshot in
                     audio.update(snapshot: snapshot)
-                    narrator.update(snapshot: snapshot, vision: manager.visionReport, closeness: audio.closeness)
+                    audio.ducked = narrator.isSpeaking
+                    narrator.update(snapshot: snapshot, vision: manager.visionReport,
+                                    closeness: audio.closeness, targetDistance: audio.targetDistance)
                 }
                 manager.start()
                 audio.start()
@@ -33,30 +37,22 @@ struct ContentView: View {
     private var floorFound: Bool { snapshot.map { $0.groundSource != .assumed } ?? false }
     private var running: Bool { manager.status == .running }
 
+    private var freshVision: VisionReport? {
+        guard let report = manager.visionReport, ProcessInfo.processInfo.systemUptime - report.timestamp < 1 else { return nil }
+        return report
+    }
+
+    /// People / animals the camera sees in front, nearest first.
+    private var peopleAhead: [VisionDetection] {
+        (freshVision?.detections ?? []).filter { abs($0.bearing) <= 0.9 }.sorted { ($0.distance ?? 99) < ($1.distance ?? 99) }
+    }
+
     /// Green when clear, through amber, to red at contact.
     private var zoneColor: Color {
         guard audio.targetDistance != nil else { return Theme.clear }
         let c = Double(audio.closeness)
         if c < 0.5 { return Theme.clear.mix(with: Theme.caution, by: c * 2) }
         return Theme.caution.mix(with: Theme.danger, by: (c - 0.5) * 2)
-    }
-
-    /// People / animals the camera sees in front, nearest first.
-    private var peopleAhead: [VisionDetection] {
-        guard let report = manager.visionReport, ProcessInfo.processInfo.systemUptime - report.timestamp < 1 else { return [] }
-        return report.detections.filter { abs($0.bearing) <= 0.8 }.sorted { ($0.distance ?? 99) < ($1.distance ?? 99) }
-    }
-
-    /// Second line under the status: what is ahead, by name.
-    private var sceneLine: String? {
-        if let spoken = narrator.lastLine { return spoken }
-        if let person = peopleAhead.first {
-            if let d = person.distance { return String(format: "%@ · %.1f m", person.label, d) }
-            return person.label
-        }
-        if audio.closeness > 0.3, let report = manager.visionReport, let label = report.labelAhead,
-           report.labelConfidence >= 0.3 { return label }
-        return nil
     }
 
     private var statusWord: String {
@@ -68,6 +64,19 @@ struct ContentView: View {
         case ..<0.85: return "Slow down"
         default: return "Stop"
         }
+    }
+
+    /// Second line under the status: the last spoken line, or what is ahead by name.
+    private var sceneLine: String? {
+        if let spoken = narrator.lastLine { return spoken }
+        if let person = peopleAhead.first {
+            if let d = person.distance { return String(format: "%@ · %.1f m", person.label, d) }
+            return person.label
+        }
+        if audio.closeness > 0.3, let report = freshVision, let label = report.labelAhead, report.labelConfidence >= 0.3 {
+            return label
+        }
+        return nil
     }
 
     private var statusMessage: String? {
@@ -82,7 +91,7 @@ struct ContentView: View {
         }
     }
 
-    // MARK: Header: minimap + status
+    // MARK: Header: minimap + status + what the camera sees
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -95,16 +104,35 @@ struct ContentView: View {
                     accent: zoneColor
                 )
                 .frame(width: 168, height: 168)
-                .glass(cornerRadius: 20)
+                .glass(cornerRadius: 22)
 
-                VStack(alignment: .leading, spacing: 6) {
-                    StatusRow(symbol: "sensor.fill", text: "LiDAR", ok: manager.capabilities.hasLiDAR)
-                    StatusRow(symbol: "headphones", text: "Headphones", ok: audio.headphonesConnected)
-                    StatusRow(symbol: "square.stack.3d.down.right.fill", text: "Floor", ok: floorFound)
+                VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        StatusRow(symbol: "sensor.fill", text: "LiDAR", ok: manager.capabilities.hasLiDAR)
+                        StatusRow(symbol: "headphones", text: "Headphones", ok: audio.headphonesConnected)
+                        StatusRow(symbol: "square.stack.3d.down.right.fill", text: "Floor", ok: floorFound)
+                    }
+                    .padding(12)
+                    .glass(cornerRadius: 16)
+
+                    if let scene = freshVision?.scene {
+                        Label(scene, systemImage: "eye")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .glass(cornerRadius: 12)
+                    }
+                    ForEach(Array(peopleAhead.prefix(2).enumerated()), id: \.offset) { _, person in
+                        Label(person.distance.map { String(format: "%@ %.1f m", person.label, $0) } ?? person.label,
+                              systemImage: "figure.stand")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Theme.live)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .glass(cornerRadius: 12)
+                    }
                 }
-                .padding(12)
-                .glass(cornerRadius: 16)
-
                 Spacer(minLength: 0)
             }
             if let statusMessage {
@@ -119,15 +147,16 @@ struct ContentView: View {
         .padding(.top, 6)
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeOut(duration: 0.2), value: peopleAhead.count)
     }
 
-    // MARK: Footer: proximity gauge + controls
+    // MARK: Footer: proximity gauge + describe + controls
 
     private var footer: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 16) {
             ProximityGauge(closeness: audio.closeness, distance: audio.targetDistance,
                            active: running, color: hazard == nil ? zoneColor : Theme.danger)
-                .frame(width: 168, height: 168)
+                .frame(width: 172, height: 172)
 
             VStack(spacing: 4) {
                 Text(statusWord)
@@ -137,36 +166,92 @@ struct ContentView: View {
                 Text(sceneLine ?? " ")
                     .font(.system(.subheadline, design: .rounded).weight(.semibold))
                     .foregroundStyle(.white.opacity(0.75))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
                     .contentTransition(.interpolate)
             }
+            .padding(.horizontal, 24)
 
-            HStack(spacing: 22) {
-                IconToggle(symbol: audio.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                           active: !audio.isMuted) { audio.isMuted.toggle() }
-                IconToggle(symbol: "iphone.radiowaves.left.and.right",
-                           active: audio.hapticsEnabled) { audio.hapticsEnabled.toggle() }
-                IconToggle(symbol: narrator.isEnabled ? "waveform.and.mic" : "waveform.slash",
-                           active: narrator.isEnabled) { narrator.isEnabled.toggle() }
-                IconToggle(symbol: "arrow.counterclockwise", active: true) { manager.reset() }
+            HStack(spacing: 12) {
+                Button {
+                    narrator.describe(snapshot: snapshot, vision: manager.visionReport)
+                } label: {
+                    Label("Describe", systemImage: "text.bubble.fill")
+                        .font(.system(.subheadline, design: .rounded).weight(.bold))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 18)
+                        .frame(height: 44)
+                        .background(Capsule().fill(.white))
+                }
+                .buttonStyle(.plain)
+                .disabled(!running)
+                .opacity(running ? 1 : 0.5)
+
+                HStack(spacing: 6) {
+                    IconToggle(symbol: audio.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                               active: !audio.isMuted) { audio.isMuted.toggle() }
+                    IconToggle(symbol: narrator.isEnabled ? "waveform.and.mic" : "waveform.slash",
+                               active: narrator.isEnabled) { narrator.isEnabled.toggle() }
+                    IconToggle(symbol: "iphone.radiowaves.left.and.right",
+                               active: audio.hapticsEnabled) { audio.hapticsEnabled.toggle() }
+                    IconToggle(symbol: "slider.horizontal.3", active: true) { showSettings = true }
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 52)
+                .glass(cornerRadius: 26)
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 10)
-            .glass(cornerRadius: 30)
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 14)
+        .padding(.bottom, 12)
         .frame(maxWidth: .infinity)
         .background(
-            LinearGradient(colors: [.clear, .black.opacity(0.7)], startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [.clear, .black.opacity(0.72)], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
         )
     }
 
+    // MARK: Settings sheet
+
+    private var settings: some View {
+        @Bindable var audio = audio
+        @Bindable var narrator = narrator
+        return NavigationStack {
+            Form {
+                Section("Sound") {
+                    HStack {
+                        Image(systemName: "speaker.wave.1.fill")
+                        Slider(value: $audio.masterVolume, in: 0...1)
+                        Image(systemName: "speaker.wave.3.fill")
+                    }
+                    Toggle("Beeps", isOn: Binding(get: { !audio.isMuted }, set: { audio.isMuted = !$0 }))
+                    Toggle("Voice", isOn: $narrator.isEnabled)
+                    Toggle("Haptics", isOn: $audio.hapticsEnabled)
+                }
+                Section("Map") {
+                    Button("Reset map", role: .destructive) { manager.reset() }
+                }
+                Section {
+                    LabeledContent("Mesh chunks", value: "\(manager.meshAnchorCount)")
+                    LabeledContent("Walking speed", value: String(format: "%.1f m/s", snapshot?.walkingSpeed ?? 0))
+                    LabeledContent("Camera", value: "1× wide + LiDAR")
+                } header: {
+                    Text("Status")
+                } footer: {
+                    Text("Beeps warn about whatever is in the cone ahead, earlier when you walk faster. The voice names people, steps and objects as you are about to reach them. Describe speaks a summary of the room.")
+                }
+            }
+            .navigationTitle("Echo")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } } }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
     private func hazardName(_ kind: TripHazardKind) -> String {
         switch kind {
-        case .drop: return "Step down ahead"
-        case .bump: return "Step up ahead"
+        case .drop: return "Step down"
+        case .bump: return "Step up"
         case .unknownSurface: return "Uneven ground"
         }
     }
@@ -231,9 +316,9 @@ private struct IconToggle: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(active ? .white : .white.opacity(0.4))
-                .frame(width: 40, height: 40)
+                .frame(width: 38, height: 38)
                 .background(Circle().fill(.white.opacity(active ? 0.14 : 0.06)))
         }
         .buttonStyle(.plain)
@@ -250,6 +335,10 @@ private struct ProximityGauge: View {
     var body: some View {
         ZStack {
             Circle()
+                .fill(color.opacity(0.10 + 0.25 * Double(closeness)))
+                .blur(radius: 18)
+                .padding(-8)
+            Circle()
                 .stroke(.white.opacity(0.12), lineWidth: 12)
             Circle()
                 .trim(from: 0, to: CGFloat(max(0.02, closeness)))
@@ -258,7 +347,7 @@ private struct ProximityGauge: View {
                 .opacity(distance == nil ? 0 : 1)
                 .animation(.easeOut(duration: 0.15), value: closeness)
             Circle()
-                .fill(color.opacity(0.12 + 0.25 * Double(closeness)))
+                .fill(.black.opacity(0.35))
                 .padding(14)
 
             VStack(spacing: 0) {
@@ -266,7 +355,7 @@ private struct ProximityGauge: View {
                     Text("—").font(.system(size: 40, weight: .bold, design: .rounded))
                 } else if let distance {
                     Text(String(format: "%.1f", distance))
-                        .font(.system(size: 48, weight: .heavy, design: .rounded))
+                        .font(.system(size: 50, weight: .heavy, design: .rounded))
                         .contentTransition(.numericText())
                     Text("metres")
                         .font(.caption.weight(.semibold))
@@ -274,6 +363,7 @@ private struct ProximityGauge: View {
                 } else {
                     Image(systemName: "checkmark")
                         .font(.system(size: 40, weight: .bold))
+                        .foregroundStyle(Theme.clear)
                 }
             }
             .foregroundStyle(.white)

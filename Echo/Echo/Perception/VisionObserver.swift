@@ -7,10 +7,15 @@
 //
 //    * People and animals: `VNDetectHumanRectanglesRequest` / `VNRecognizeAnimalsRequest`
 //      give boxes; the depth map inside each box gives a distance, the camera intrinsics
-//      give a bearing. A person is then "Person, 1.4 m, on your left" rather than an
+//      give a bearing. A person is then "Person, 1.4 m, in your path" rather than an
 //      anonymous blob of mesh.
 //    * What is ahead: when the sonar has a target, `VNClassifyImageRequest` classifies the
-//      image region around it (door, staircase, chair, car, ...) so the narrator can name it.
+//      image region around it (door, staircase, chair, car, ...). A name is only reported
+//      once two of the last three passes agree, so a flickering guess is never spoken.
+//    * Where you are: the whole image is classified for a scene word (hallway, kitchen,
+//      street, ...) used by the "describe" summary.
+//    * Signs: every few passes `VNRecognizeTextRequest` reads the image and wayfinding
+//      words (EXIT, RESTROOM, STAIRS, PUSH, ...) are reported.
 //
 //  Work happens on a serial background queue; at most one frame is in flight. Results
 //  come back on the main actor through `onReport`.
@@ -35,14 +40,21 @@ nonisolated struct VisionDetection: Sendable {
     /// Horizontal distance in metres, nil when the depth map had nothing usable in the box.
     let distance: Float?
     let confidence: Float
+
+    /// Sideways offset from the walking line in metres (right positive), when distance is known.
+    var lateralOffset: Float? { distance.map { $0 * sin(bearing) } }
 }
 
 nonisolated struct VisionReport: Sendable {
     let timestamp: TimeInterval
     let detections: [VisionDetection]
-    /// Spoken name of the thing at the sonar target, if the classifier was confident.
+    /// Spoken name of the thing at the sonar target, after voting across passes.
     let labelAhead: String?
     let labelConfidence: Float
+    /// Spoken name of the surroundings ("Hallway", "Street"), if confident.
+    let scene: String?
+    /// Wayfinding words read from signs in view, most recent pass only.
+    let signs: [String]
 }
 
 nonisolated final class VisionObserver: @unchecked Sendable {
@@ -64,6 +76,12 @@ nonisolated final class VisionObserver: @unchecked Sendable {
     private let busy = OSAllocatedUnfairLock(initialState: false)
     private let onReport: @MainActor @Sendable (VisionReport) -> Void
     private let logger = Logger(subsystem: "echo.perception", category: "VisionObserver")
+
+    // Worker-queue state.
+    private var passCounter = 0
+    private var labelVotes: [(name: String, confidence: Float)?] = []
+    private var sceneVotes: [String?] = []
+    private var lastSigns: [String] = []
 
     init(onReport: @escaping @MainActor @Sendable (VisionReport) -> Void) {
         self.onReport = onReport
@@ -88,15 +106,29 @@ nonisolated final class VisionObserver: @unchecked Sendable {
     // MARK: Analysis
 
     private func analyze(_ input: Input) -> VisionReport {
+        passCounter += 1
+        let readSigns = passCounter % 3 == 0
+
         let people = VNDetectHumanRectanglesRequest()
         people.upperBodyOnly = true
         let animals = VNRecognizeAnimalsRequest()
-        var requests: [VNRequest] = [people, animals]
+        let scene = VNClassifyImageRequest()
+        var requests: [VNRequest] = [people, animals, scene]
+
         var classify: VNClassifyImageRequest?
         if let region = input.regionAhead {
             let request = VNClassifyImageRequest()
             request.regionOfInterest = region
             classify = request
+            requests.append(request)
+        }
+        var text: VNRecognizeTextRequest?
+        if readSigns {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .fast
+            request.usesLanguageCorrection = false
+            request.minimumTextHeight = 0.03
+            text = request
             requests.append(request)
         }
 
@@ -105,7 +137,8 @@ nonisolated final class VisionObserver: @unchecked Sendable {
             try handler.perform(requests)
         } catch {
             logger.error("Vision failed: \(error.localizedDescription, privacy: .public)")
-            return VisionReport(timestamp: input.timestamp, detections: [], labelAhead: nil, labelConfidence: 0)
+            return VisionReport(timestamp: input.timestamp, detections: [], labelAhead: nil, labelConfidence: 0,
+                                scene: nil, signs: [])
         }
 
         var detections: [VisionDetection] = []
@@ -117,20 +150,43 @@ nonisolated final class VisionObserver: @unchecked Sendable {
             detections.append(detection(name, box: observation.boundingBox, confidence: observation.confidence, input: input))
         }
 
+        // Object ahead: vote over the last three passes.
+        let guess = classify?.results.flatMap { Self.bestName(in: $0, table: Self.objectNames) }
+        labelVotes.append(guess)
+        if labelVotes.count > 3 { labelVotes.removeFirst() }
         var labelAhead: String?
         var labelConfidence: Float = 0
-        if let results = classify?.results {
-            for observation in results.prefix(12) where observation.confidence >= 0.2 {
-                if let name = Self.spokenName(for: observation.identifier) {
-                    labelAhead = name
-                    labelConfidence = observation.confidence
-                    break
-                }
+        if let latest = guess {
+            let agreeing = labelVotes.compactMap { $0 }.filter { $0.name == latest.name }
+            if agreeing.count >= 2 {
+                labelAhead = latest.name
+                labelConfidence = agreeing.map(\.confidence).max() ?? latest.confidence
             }
         }
 
+        // Scene: vote over the last five passes.
+        sceneVotes.append(scene.results.flatMap { Self.bestName(in: $0, table: Self.sceneNames, minimum: 0.15) }?.name)
+        if sceneVotes.count > 5 { sceneVotes.removeFirst() }
+        let sceneName = Dictionary(grouping: sceneVotes.compactMap { $0 }, by: { $0 })
+            .max { $0.value.count < $1.value.count }
+            .flatMap { $0.value.count >= 3 ? $0.key : nil }
+
+        // Signs.
+        if let text {
+            var found: [String] = []
+            for observation in text.results ?? [] {
+                guard let candidate = observation.topCandidates(1).first, candidate.confidence >= 0.4 else { continue }
+                let words = candidate.string.uppercased()
+                for sign in Self.signWords where words.contains(sign) && !found.contains(sign) {
+                    found.append(sign)
+                }
+            }
+            lastSigns = found
+        }
+
         return VisionReport(timestamp: input.timestamp, detections: detections,
-                            labelAhead: labelAhead, labelConfidence: labelConfidence)
+                            labelAhead: labelAhead, labelConfidence: labelConfidence,
+                            scene: sceneName, signs: lastSigns)
     }
 
     /// Distance and bearing for a Vision box, from the depth map inside its central part.
@@ -203,8 +259,10 @@ nonisolated final class VisionObserver: @unchecked Sendable {
         (u: 1 - visionY, v: 1 - visionX)
     }
 
-    /// Classifier identifiers worth saying out loud, and how to say them.
-    private static let spokenNames: [(key: String, name: String)] = [
+    // MARK: Vocabulary
+
+    /// Classifier identifiers worth saying out loud as the thing ahead, and how to say them.
+    private static let objectNames: [(key: String, name: String)] = [
         ("staircase", "Stairs"), ("stairs", "Stairs"), ("escalator", "Escalator"), ("elevator", "Elevator"),
         ("door", "Door"), ("gate", "Gate"), ("fence", "Fence"), ("railing", "Railing"), ("wall", "Wall"),
         ("pillar", "Pillar"), ("column", "Pillar"), ("pole", "Pole"), ("tree", "Tree"), ("plant", "Plant"),
@@ -219,8 +277,35 @@ nonisolated final class VisionObserver: @unchecked Sendable {
         ("people", "Person"), ("crowd", "People"),
     ]
 
-    private static func spokenName(for identifier: String) -> String? {
-        let id = identifier.lowercased()
-        return spokenNames.first { id == $0.key || id.hasPrefix($0.key + " ") || id.hasSuffix(" " + $0.key) || id.contains("_" + $0.key) || id.contains($0.key + "_") }?.name
+    /// Scene words for the "describe" summary.
+    private static let sceneNames: [(key: String, name: String)] = [
+        ("hallway", "Hallway"), ("corridor", "Hallway"), ("staircase", "Stairwell"), ("elevator", "Elevator"),
+        ("kitchen", "Kitchen"), ("bathroom", "Bathroom"), ("bedroom", "Bedroom"), ("living room", "Living room"),
+        ("office", "Office"), ("classroom", "Classroom"), ("lobby", "Lobby"), ("store", "Store"), ("shop", "Store"),
+        ("restaurant", "Restaurant"), ("cafe", "Cafe"), ("gym", "Gym"), ("garage", "Garage"), ("parking", "Parking lot"),
+        ("street", "Street"), ("sidewalk", "Sidewalk"), ("road", "Road"), ("crosswalk", "Crosswalk"), ("park", "Park"),
+        ("garden", "Garden"), ("beach", "Beach"), ("forest", "Woods"), ("bridge", "Bridge"), ("platform", "Platform"),
+        ("station", "Station"), ("bus", "Bus"), ("train", "Train"), ("outdoor", "Outdoors"), ("indoor", "Indoors"),
+    ]
+
+    /// Wayfinding words worth reading off a sign.
+    private static let signWords = [
+        "EXIT", "ENTRANCE", "RESTROOM", "TOILET", "WOMEN", "MEN", "STAIRS", "ELEVATOR", "PUSH", "PULL",
+        "EMERGENCY", "CAUTION", "WET FLOOR", "NO ENTRY", "DO NOT ENTER", "STOP", "OPEN", "CLOSED", "RECEPTION",
+    ]
+
+    private static func bestName(in observations: [VNClassificationObservation],
+                                 table: [(key: String, name: String)],
+                                 minimum: Float = 0.2) -> (name: String, confidence: Float)? {
+        for observation in observations.prefix(15) where observation.confidence >= minimum {
+            let id = observation.identifier.lowercased()
+            if let entry = table.first(where: {
+                id == $0.key || id.hasPrefix($0.key + " ") || id.hasSuffix(" " + $0.key)
+                    || id.contains("_" + $0.key) || id.contains($0.key + "_") || id.contains(" " + $0.key + " ")
+            }) {
+                return (entry.name, observation.confidence)
+            }
+        }
+        return nil
     }
 }

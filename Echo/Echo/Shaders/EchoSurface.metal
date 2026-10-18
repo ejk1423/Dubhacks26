@@ -19,8 +19,8 @@ using namespace metal;
 
 constant float kGridSpacing  = 0.25;   // metres between grid lines
 constant float kGridWidth    = 1.2;    // line width in pixels
-constant float kFullAlphaAt  = 1.8;    // metres: fully visible inside this
-constant float kFadedOutAt   = 3.5;    // metres: invisible beyond this
+constant float kFullAlphaAt  = 2.2;    // metres: fully visible inside this
+constant float kFadedOutAt   = 4.0;    // metres: invisible beyond this
 constant float kRingPeriod   = 2.5;    // seconds per sweep
 constant float kRingSpeed    = 1.4;    // metres per second
 
@@ -52,7 +52,7 @@ void echoSurface(realitykit::surface_parameters params)
     float ringRadius = fmod(time, kRingPeriod) * kRingSpeed;
     float ring = exp(-pow((d - ringRadius) * 6.0, 2.0)) * 0.6;
 
-    float alpha = fade * (0.55 + 0.4 * line + 0.5 * ring);
+    float alpha = fade * (0.8 + 0.2 * line + 0.4 * ring);
 
     params.surface().set_base_color(half3(tint));
     params.surface().set_emissive_color(half3(tint) * half(0.35 * (line + ring)));

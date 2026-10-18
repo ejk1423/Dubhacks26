@@ -18,8 +18,8 @@ nonisolated struct PerceptionConfig: Sendable {
 
     // Walking-path corridor analysed for trip hazards, expressed relative to the
     // camera position along the horizontal heading (`t` = ahead, `s` = right).
-    var pathNear: Float = 1.0
-    var pathFar: Float = 3.0
+    var pathNear: Float = 0.3
+    var pathFar: Float = 2.5
     var pathHalfWidth: Float = 0.5
     var cellSize: Float = 0.2
 
@@ -62,7 +62,7 @@ nonisolated struct PerceptionConfig: Sendable {
     var visionFrameStride: Int = 12            // run Vision on every Nth ARFrame (60 Hz -> 5 Hz)
     var maxAnchorUpdatesPerFrame: Int = 2      // mesh anchors converted per ARFrame (60 Hz)
     var maxUpsertsInFlight: Int = 3            // chunks queued on the store before ingestion waits
-    var renderRadius: Float = 3.5              // mesh chunks farther than this are hidden (shader fades out by 3.5 m)
+    var renderRadius: Float = 4.0              // mesh chunks farther than this are hidden (shader fades out by 4 m)
     var hazardOverlayLift: Float = 0.015       // lift the red overlay above the mesh to avoid z-fighting
     var maxOverlayTriangles: Int = 20_000
 }
@@ -240,6 +240,8 @@ nonisolated struct SceneSnapshot: Sendable {
     let fineSectorHits: [ObstacleHit?]
     let map: OccupancyMap
     let tripHazards: [TripHazard]
+    /// Horizontal walking speed in m/s, smoothed over the last few analyses.
+    let walkingSpeed: Float
     let meshAnchorCount: Int
     let vertexCount: Int
 }

@@ -150,6 +150,8 @@ actor MeshGeometryStore {
     private var lastGround: Float?
     private var lastAnalysisTime: TimeInterval?
     private var lastHeading: SIMD3<Float>?
+    private var lastPosition: SIMD3<Float>?
+    private var walkingSpeed: Float = 0
     /// Fine sonar sectors (15 degrees each, index 0 centred dead ahead, clockwise).
     private static let sectorCount = 24
     private var smoothedSectors = [Float](repeating: .infinity, count: sectorCount)
@@ -277,6 +279,8 @@ actor MeshGeometryStore {
     private func resetTracking() {
         lastAnalysisTime = nil
         lastHeading = nil
+        lastPosition = nil
+        walkingSpeed = 0
         smoothedSectors = [Float](repeating: .infinity, count: Self.sectorCount)
         sectorHits = [ObstacleHit?](repeating: nil, count: Self.sectorCount)
         sectorStreaks = [Int](repeating: 0, count: Self.sectorCount)
@@ -324,6 +328,14 @@ actor MeshGeometryStore {
 
         let dt = Float(min(max(timestamp - (lastAnalysisTime ?? timestamp), 0), 0.5))
         lastAnalysisTime = timestamp
+
+        // Walking speed (horizontal), exponentially smoothed over ~0.4 s.
+        if let last = lastPosition, dt > 0.01 {
+            let instantaneous = simd_length((p0 - last).xz) / dt
+            let blend = min(1, dt / 0.4)
+            walkingSpeed += (instantaneous - walkingSpeed) * blend
+        }
+        lastPosition = p0
 
         // The sonar works off an assumed floor height (walls span floor to ceiling), but
         // trip hazards are height differences, so they wait for a real floor.
@@ -713,6 +725,7 @@ actor MeshGeometryStore {
             fineSectorHits: sectorHits,
             map: map,
             tripHazards: hazards,
+            walkingSpeed: walkingSpeed,
             meshAnchorCount: chunks.count,
             vertexCount: totalVertices
         )
