@@ -111,8 +111,13 @@ struct ContentView: View {
     private var running: Bool { manager.status == .running }
     private var floorFound: Bool { snapshot.map { $0.groundSource != .assumed } ?? false }
 
+    /// The hazard worth showing: in the walking line and close, the same bar the voice uses.
+    private var hazardAhead: TripHazard? {
+        manager.tripHazards.first { $0.distanceAhead > 0 && $0.distanceAhead <= 1.2 && abs($0.lateralOffset) <= 0.6 }
+    }
+
     private var state: ProximityState {
-        ProximityState.make(running: running, hazard: manager.tripHazards.first,
+        ProximityState.make(running: running, hazard: hazardAhead,
                             closeness: audio.closeness, distance: audio.targetDistance)
     }
 
