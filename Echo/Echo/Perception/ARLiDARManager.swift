@@ -46,6 +46,12 @@ final class ARLiDARManager: NSObject {
     @ObservationIgnored private let renderer: SurfaceRenderer
     @ObservationIgnored private var vision: VisionObserver?
     @ObservationIgnored private var frameCounter = 0
+    @ObservationIgnored private var startedAt: TimeInterval = 0
+
+    /// The first seconds after start, while the mesh floods in and shaders compile: analysis
+    /// runs lighter and less often, mesh rebuilds are rationed, Vision waits. Keeps the main
+    /// thread responsive so the audio is not starved.
+    private var warmingUp: Bool { ProcessInfo.processInfo.systemUptime - startedAt < config.warmupSeconds }
     @ObservationIgnored private let logger = Logger(subsystem: "echo.perception", category: "ARLiDARManager")
 
     // MARK: Hooks for other subsystems (invoked on the main actor)
@@ -87,6 +93,7 @@ final class ARLiDARManager: NSObject {
     /// Starts (or restarts) world tracking with LiDAR mesh reconstruction.
     func start() {
         guard !isRunning else { return }   // a repeated onAppear must not wipe the map
+        startedAt = ProcessInfo.processInfo.systemUptime
         guard capabilities.worldTracking else {
             status = .unsupported("ARKit world tracking is not available on this device.")
             return
@@ -234,7 +241,7 @@ final class ARLiDARManager: NSObject {
     /// so a slow store applies backpressure instead of piling up chunk copies in memory.
     private func drainPendingAnchors(timestamp: TimeInterval) {
         var processed = 0
-        while processed < config.maxAnchorUpdatesPerFrame,
+        while processed < (warmingUp ? 1 : config.maxAnchorUpdatesPerFrame),
               upsertsInFlight < config.maxUpsertsInFlight,
               !pendingOrder.isEmpty {
             let id = pendingOrder.removeFirst()
@@ -253,12 +260,12 @@ final class ARLiDARManager: NSObject {
 
     private func scheduleAnalysisIfNeeded(frame: ARFrame) {
         guard !analysisInFlight,
-              frame.timestamp - lastAnalysisTime >= config.analysisInterval else { return }
+              frame.timestamp - lastAnalysisTime >= (warmingUp ? max(config.analysisInterval, 0.12) : config.analysisInterval) else { return }
         analysisInFlight = true
         lastAnalysisTime = frame.timestamp
         let transform = frame.camera.transform
         let timestamp = frame.timestamp
-        let depthPoints = Self.depthPoints(from: frame, step: config.depthSampleStep,
+        let depthPoints = Self.depthPoints(from: frame, step: warmingUp ? max(config.depthSampleStep, 3) : config.depthSampleStep,
                                            maxDepth: config.obstacleMaxRange + 0.5)
         Task {
             let result = await store.analyze(cameraTransform: transform, timestamp: timestamp,
@@ -426,7 +433,7 @@ extension ARLiDARManager: @preconcurrency ARSessionDelegate {
         onFrame?(frame)
         scheduleAnalysisIfNeeded(frame: frame)
         frameCounter += 1
-        if frameCounter % config.visionFrameStride == 0 { submitToVision(frame) }
+        if !warmingUp, frameCounter % config.visionFrameStride == 0 { submitToVision(frame) }
     }
 
     /// Hands the camera image, depth and a region around the sonar target to the Vision worker.

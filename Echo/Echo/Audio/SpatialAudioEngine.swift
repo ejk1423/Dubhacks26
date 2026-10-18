@@ -203,6 +203,7 @@ final class SpatialAudioEngine {
             // A longer I/O buffer gives the synthesizer and the engine headroom under load;
             // crackly speech is the sound of buffers arriving late.
             try? session.setPreferredIOBufferDuration(0.023)
+            try? session.setPreferredSampleRate(stereo.sampleRate)   // no resampling between the engine and the hardware
             try session.setActive(true)
             updateRoute()
 

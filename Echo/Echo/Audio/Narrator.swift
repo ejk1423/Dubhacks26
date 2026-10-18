@@ -139,6 +139,16 @@ final class Narrator {
         voice = Self.bestVoice(identifier: nil)
         delegate = SpeechDelegate { [weak self] in self?.isSpeaking = false }
         synthesizer.delegate = delegate
+        prewarm()
+    }
+
+    /// Loading a premium voice on its first real line costs a visible stall and crunchy
+    /// audio. Say nothing audible once, early, so the voice is resident before it matters.
+    private func prewarm() {
+        let utterance = AVSpeechUtterance(string: " ")
+        utterance.voice = voice
+        utterance.volume = 0
+        synthesizer.speak(utterance)
     }
 
     // MARK: Naming
