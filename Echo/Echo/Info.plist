@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Echo – assistive spatial navigation.
+	  This file is MERGED with the Xcode-generated Info.plist
+	  (GENERATE_INFOPLIST_FILE = YES + INFOPLIST_FILE = Echo/Info.plist),
+	  so only keys that Xcode cannot synthesize live here.
+	-->
+
+	<!-- ===== Privacy (purpose strings shown in the system permission prompts) ===== -->
+
+	<!-- ARKit world tracking + LiDAR scene reconstruction. Required. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Echo uses the camera and LiDAR scanner to build a live map of your surroundings so it can warn you about walls, people, curbs and potholes.</string>
+
+	<!-- CMHeadphoneMotionManager (AirPods head tracking) and CMMotionManager (fall / impact detection). Required. -->
+	<key>NSMotionUsageDescription</key>
+	<string>Echo uses motion data from your iPhone and AirPods to follow the direction you are facing for 3D audio cues, and to detect a fall or collision.</string>
+
+	<!-- CoreLocation: GPS fix attached to the SOS alert. Required. -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Echo shares your exact location with your emergency contacts and community helpers if a fall or collision is detected and you do not cancel the alert.</string>
+
+	<!-- ===== Capabilities / runtime behaviour ===== -->
+
+	<!-- App Store gating: only devices with ARKit world tracking can install. LiDAR itself is
+	     checked at runtime (ARWorldTrackingConfiguration.supportsSceneReconstruction). -->
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arkit</string>
+		<string>arm64</string>
+	</array>
+
+	<!-- Keep the spatial-audio engine and the SOS countdown audible if the screen locks. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+
+	<!-- Accessibility: the app is a safety aid, so it must never be throttled for low power
+	     while scanning. (Idle timer is also disabled in code while the session runs.) -->
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+</dict>
+</plist>
