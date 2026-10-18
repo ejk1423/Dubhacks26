@@ -157,8 +157,9 @@ final class Narrator {
                 && ($0.distanceAhead <= hazardMinDistance || secondsTo($0.distanceAhead) <= hazardLeadTime)
         }) {
             // Once per hazard (ids are stable while it stays put), and never two in quick succession.
-            if lastSpoken["hazard"].map({ now - $0 >= 3 }) ?? true,
-               say(Self.name(hazard), key: "hazard:\(hazard.id)", every: 12, interrupt: true, alert: true, now: now) {
+            if let line = Self.hazardLine(hazard, vision: fresh),
+               lastSpoken["hazard"].map({ now - $0 >= 3 }) ?? true,
+               say(line, key: "hazard:\(hazard.id)", every: 12, interrupt: true, alert: true, now: now) {
                 lastSpoken["hazard"] = now
                 return
             }
@@ -554,11 +555,35 @@ final class Narrator {
 
     /// Edge hazards (the floor simply ends) are published as `.drop` with no vertices below.
     private static func name(_ hazard: TripHazard) -> String {
+        if hazard.isCompact, hazard.kind == .bump { return "Something on the floor" }
         switch hazard.kind {
         case .drop: return hazard.vertexCount == 0 ? "Drop-off" : "Step down"
         case .bump: return "Step up"
         case .unknownSurface: return "Uneven ground"
         }
+    }
+
+    /// What to say about a trip hazard, if anything, from its footprint and what the camera
+    /// sees on the floor there. Geometry and vision have to agree before a step is called
+    /// far out; a compact bump is an object, and anything the camera says is flat (a rug, a
+    /// cable, a threshold strip) is left alone. Returns nil to stay quiet.
+    static func hazardLine(_ hazard: TripHazard, vision: VisionReport?) -> String? {
+        if hazard.kind == .drop, hazard.vertexCount == 0 { return "Drop-off" }
+        let ground = vision?.groundKind
+        let label = vision?.groundLabel
+        if ground == .flat { return nil }
+
+        let strongGeometry = abs(hazard.elevation) >= 0.14 && hazard.lateralSpan >= 0.6
+        let close = hazard.distanceAhead <= 0.5
+
+        if hazard.kind == .bump, ground == .object || (hazard.isCompact && ground != .step) {
+            if let label, ground == .object { return "\(label) on the floor ahead" }
+            return strongGeometry || close ? "Something on the floor ahead" : nil
+        }
+        if ground == .step || strongGeometry {
+            return name(hazard)
+        }
+        return close ? "Watch your step" : nil
     }
 
     /// Natural distance words, nil inside arm's reach (say "right in front of you" instead).

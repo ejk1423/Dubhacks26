@@ -263,11 +263,21 @@ nonisolated struct TripHazard: Sendable, Identifiable, Equatable {
     let elevation: Float
     let confidence: Float
     let vertexCount: Int
+    /// Footprint of the raised / sunken patch: metres across the path and along it.
+    /// A step or curb spans the path; a bag or a shoe is compact.
+    var lateralSpan: Float = 0
+    var alongSpan: Float = 0
+
+    /// Small in both directions: an object lying on the floor rather than a step.
+    var isCompact: Bool { lateralSpan > 0 && lateralSpan < 0.6 }
 
     func withID(_ id: Int) -> TripHazard {
-        TripHazard(id: id, kind: kind, position: position, distanceAhead: distanceAhead,
-                   lateralOffset: lateralOffset, elevation: elevation,
-                   confidence: confidence, vertexCount: vertexCount)
+        var copy = TripHazard(id: id, kind: kind, position: position, distanceAhead: distanceAhead,
+                              lateralOffset: lateralOffset, elevation: elevation,
+                              confidence: confidence, vertexCount: vertexCount)
+        copy.lateralSpan = lateralSpan
+        copy.alongSpan = alongSpan
+        return copy
     }
 }
 

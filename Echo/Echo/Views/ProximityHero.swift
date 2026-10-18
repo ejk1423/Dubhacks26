@@ -81,11 +81,11 @@ struct ProximityHero: View {
             Image(systemName: "checkmark")
                 .font(.system(size: large ? 92 : 54, weight: .heavy))
                 .foregroundStyle(Theme.clear)
-        case .hazard, .edge:
+        case .hazard, .edge, .floorObject:
             VStack(spacing: 2) {
                 Image(systemName: state.symbol ?? "exclamationmark")
                     .font(.system(size: large ? 64 : 40, weight: .heavy))
-                    .foregroundStyle(Theme.danger)
+                    .foregroundStyle(state.color)
                 if let distance = state.distance {
                     distanceText(distance, size: large ? 40 : 24, unitSize: large ? 18 : 12)
                 }

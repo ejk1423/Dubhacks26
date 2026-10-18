@@ -792,8 +792,9 @@ actor MeshGeometryStore {
             // A step or curb spans the path and has nothing standing on it. A one-cell ridge
             // is clutter (a cable, a chair leg), and elevated floor with solid geometry above
             // it is the foot of a wall or a piece of furniture, not something to step onto.
+            let columns = Set(members.map { $0 % nS })
+            let rows = Set(members.map { $0 / nS })
             if kind != .unknown {
-                let columns = Set(members.map { $0 % nS })
                 let underSomething = members.contains { cells[$0].obstacleCount >= cfg.minHazardVertices }
                 if columns.count < cfg.minHazardWidthCells || underSomething { continue }
             }
@@ -844,7 +845,9 @@ actor MeshGeometryStore {
                 lateralOffset: rel.x * right.x + rel.z * right.z,
                 elevation: elevation,
                 confidence: confidence,
-                vertexCount: max(count, 1)
+                vertexCount: max(count, 1),
+                lateralSpan: Float(columns.count) * cfg.cellSize,
+                alongSpan: Float(rows.count) * cfg.cellSize
             ), members))
         }
 

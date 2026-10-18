@@ -25,6 +25,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         case stop           // at contact
         case hazard(TripHazardKind)
         case edge           // the floor ends: a platform edge or stairs down with nothing seen below
+        case floorObject    // a compact bump: something lying on the floor, not a step
     }
 
     let kind: Kind
@@ -36,7 +37,10 @@ nonisolated struct ProximityState: Equatable, Sendable {
     static func make(running: Bool, hazard: TripHazard?, closeness: Float, distance: Float?) -> ProximityState {
         guard running else { return ProximityState(kind: .starting, distance: nil, closeness: 0) }
         if let hazard {
-            let kind: Kind = hazard.kind == .drop && hazard.vertexCount == 0 ? .edge : .hazard(hazard.kind)
+            let kind: Kind
+            if hazard.kind == .drop, hazard.vertexCount == 0 { kind = .edge }
+            else if hazard.kind == .bump, hazard.isCompact { kind = .floorObject }
+            else { kind = .hazard(hazard.kind) }
             return ProximityState(kind: kind, distance: hazard.distanceAhead, closeness: closeness)
         }
         guard let distance else { return ProximityState(kind: .clear, distance: nil, closeness: 0) }
@@ -51,7 +55,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         switch kind {
         case .starting: return .inactive
         case .clear: return .clear
-        case .ahead, .slow: return .caution
+        case .ahead, .slow, .floorObject: return .caution
         case .stop, .hazard, .edge: return .danger
         }
     }
@@ -68,6 +72,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         case .hazard(.drop): return "Step down"
         case .hazard(.unknownSurface): return "Uneven ground"
         case .edge: return "Drop-off"
+        case .floorObject: return "On the floor"
         }
     }
 
@@ -80,6 +85,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         case .hazard(.drop): return "arrow.down.to.line"
         case .hazard(.unknownSurface): return "questionmark"
         case .edge: return "arrow.down.right.and.arrow.up.left"
+        case .floorObject: return "shippingbox.fill"
         case .ahead, .slow, .stop: return nil
         }
     }
@@ -90,6 +96,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         case .starting: return Theme.inactive
         case .clear: return Theme.clear
         case .hazard, .edge: return Theme.danger
+        case .floorObject: return Theme.caution
         case .ahead, .slow, .stop: return Theme.proximityColor(closeness: closeness)
         }
     }
@@ -99,6 +106,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         switch kind {
         case .starting, .clear: return 0
         case .hazard, .edge: return 0.55
+        case .floorObject: return 0.35
         case .ahead, .slow, .stop: return Double(closeness * closeness) * 0.9
         }
     }
@@ -111,6 +119,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         case .slow: return "Slow down. Obstacle \(Self.spoken(distance)) ahead"
         case .stop: return "Stop. Obstacle \(Self.spoken(distance)) ahead"
         case .hazard, .edge: return "\(title), \(Self.spoken(distance)) ahead"
+        case .floorObject: return "Something on the floor, \(Self.spoken(distance)) ahead"
         }
     }
 

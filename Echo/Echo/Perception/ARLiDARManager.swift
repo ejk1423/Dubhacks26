@@ -431,18 +431,18 @@ extension ARLiDARManager: @preconcurrency ARSessionDelegate {
 
     /// Hands the camera image, depth and a region around the sonar target to the Vision worker.
     private func submitToVision(_ frame: ARFrame) {
-        var region: CGRect?
-        if let point = snapshot?.nearestForwardObstacle?.point {
-            // Upright (portrait) viewport, then Vision's bottom-left-origin normalised space.
-            let viewport = CGSize(width: frame.camera.imageResolution.height, height: frame.camera.imageResolution.width)
+        // Upright (portrait) viewport, then Vision's bottom-left-origin normalised space.
+        let viewport = CGSize(width: frame.camera.imageResolution.height, height: frame.camera.imageResolution.width)
+        func imageRegion(around point: SIMD3<Float>, width: CGFloat, height: CGFloat) -> CGRect? {
             let p = frame.camera.projectPoint(point, orientation: .portrait, viewportSize: viewport)
             let x = p.x / viewport.width, y = 1 - p.y / viewport.height
-            if x.isFinite, y.isFinite {
-                let r = CGRect(x: x - 0.22, y: y - 0.28, width: 0.44, height: 0.56)
-                    .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-                if r.width > 0.1, r.height > 0.1 { region = r }
-            }
+            guard x.isFinite, y.isFinite else { return nil }
+            let r = CGRect(x: x - width / 2, y: y - height / 2, width: width, height: height)
+                .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+            return r.width > 0.1 && r.height > 0.1 ? r : nil
         }
+        let region = snapshot?.nearestForwardObstacle.flatMap { imageRegion(around: $0.point, width: 0.44, height: 0.56) }
+        let groundRegion = snapshot?.tripHazards.first.flatMap { imageRegion(around: $0.position, width: 0.5, height: 0.34) }
         vision?.process(VisionObserver.Input(
             image: frame.capturedImage,
             depth: frame.sceneDepth?.depthMap,
@@ -451,7 +451,8 @@ extension ARLiDARManager: @preconcurrency ARSessionDelegate {
             imageResolution: frame.camera.imageResolution,
             cameraTransform: frame.camera.transform,
             regionAhead: region,
-            timestamp: ProcessInfo.processInfo.systemUptime
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            regionGround: groundRegion
         ))
     }
 

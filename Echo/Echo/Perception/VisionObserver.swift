@@ -111,6 +111,11 @@ nonisolated struct SignSighting: Sendable, Equatable {
     }
 }
 
+/// What the camera thinks the floor patch at a trip hazard is.
+nonisolated enum GroundKind: Sendable, Equatable {
+    case step, object, flat
+}
+
 nonisolated struct VisionReport: Sendable {
     let timestamp: TimeInterval
     let detections: [VisionDetection]
@@ -127,6 +132,10 @@ nonisolated struct VisionReport: Sendable {
     let lastSign: SignSighting?
     /// Signs read in the last minute, newest first, one per text.
     let recentSigns: [SignSighting]
+    /// The floor patch at the nearest trip hazard, after voting: a step, an object, or flat.
+    var groundKind: GroundKind? = nil
+    var groundLabel: String? = nil
+    var groundConfidence: Float = 0
 
     /// People in the report, nearest first.
     var people: [VisionDetection] {
@@ -147,6 +156,8 @@ nonisolated final class VisionObserver: @unchecked Sendable {
         /// Vision-normalised region (bottom-left origin) around the sonar target, if any.
         let regionAhead: CGRect?
         let timestamp: TimeInterval
+        /// Region around the nearest trip hazard on the floor, if any.
+        var regionGround: CGRect? = nil
     }
 
     private let queue = DispatchQueue(label: "echo.vision", qos: .userInitiated)
@@ -156,6 +167,7 @@ nonisolated final class VisionObserver: @unchecked Sendable {
 
     // Worker-queue state.
     private var passCounter = 0
+    private var groundVotes: [(kind: GroundKind, name: String, confidence: Float)?] = []
     private var labelScores: [String: Float] = [:]
     private var labelLastSeenPass: [String: Int] = [:]
     private var sceneVotes: [String?] = []
@@ -236,6 +248,13 @@ nonisolated final class VisionObserver: @unchecked Sendable {
             classify = request
             requests.append(request)
         }
+        var classifyGround: VNClassifyImageRequest?
+        if let region = input.regionGround {
+            let request = VNClassifyImageRequest()
+            request.regionOfInterest = region
+            classifyGround = request
+            requests.append(request)
+        }
         var text: VNRecognizeTextRequest?
         if readsText {
             let request = VNRecognizeTextRequest()
@@ -287,10 +306,27 @@ nonisolated final class VisionObserver: @unchecked Sendable {
         }
         recentSigns.removeAll { input.timestamp - $0.timestamp > signMemory }
 
+        // What is on the floor at the hazard: vote over the last three passes so a single
+        // confused frame never turns a rug into a step.
+        groundVotes.append(classifyGround?.results.flatMap { Self.groundGuess(in: $0) })
+        if groundVotes.count > 3 { groundVotes.removeFirst() }
+        var groundKind: GroundKind?
+        var groundLabel: String?
+        var groundConfidence: Float = 0
+        if let latest = groundVotes.last ?? nil {
+            let agreeing = groundVotes.compactMap { $0 }.filter { $0.kind == latest.kind }
+            if agreeing.count >= 2 {
+                groundKind = latest.kind
+                groundLabel = latest.name
+                groundConfidence = agreeing.map(\.confidence).max() ?? latest.confidence
+            }
+        }
+
         return VisionReport(timestamp: input.timestamp, detections: detections,
                             labelAhead: labelAhead, labelConfidence: labelConfidence,
                             scene: sceneName, signs: lastSigns, isIndoors: indoors,
-                            lastSign: recentSigns.first, recentSigns: recentSigns)
+                            lastSign: recentSigns.first, recentSigns: recentSigns,
+                            groundKind: groundKind, groundLabel: groundLabel, groundConfidence: groundConfidence)
     }
 
     // MARK: Tracking
@@ -579,6 +615,40 @@ nonisolated final class VisionObserver: @unchecked Sendable {
 
     /// Classifier identifiers worth saying out loud as the thing ahead, and how to say them.
     /// More specific keys come first so "glass door" wins over "door".
+    /// What the floor patch at a trip hazard can be: a real step, an object lying there,
+    /// or something flat that the mesh raised a little (a rug, a cable, a threshold strip).
+    private static let groundNames: [(key: String, name: String, kind: GroundKind)] = [
+        ("staircase", "Stairs", .step), ("stairs", "Stairs", .step), ("stairway", "Stairs", .step), ("step", "Step", .step),
+        ("curb", "Curb", .step), ("kerb", "Curb", .step), ("doorstep", "Step", .step), ("ramp", "Ramp", .step),
+        ("ledge", "Ledge", .step), ("platform", "Platform edge", .step), ("escalator", "Escalator", .step),
+        ("doormat", "Mat", .flat), ("mat", "Mat", .flat), ("rug", "Rug", .flat), ("carpet", "Carpet", .flat),
+        ("threshold", "Threshold", .flat), ("cable", "Cable", .flat), ("cord", "Cable", .flat), ("wire", "Cable", .flat),
+        ("tile", "Floor", .flat), ("floor", "Floor", .flat), ("grass", "Grass", .flat), ("manhole", "Manhole", .flat),
+        ("drain", "Drain", .flat), ("puddle", "Puddle", .flat), ("shadow", "Floor", .flat), ("sidewalk", "Floor", .flat),
+        ("pavement", "Floor", .flat), ("road", "Floor", .flat), ("hardwood", "Floor", .flat), ("concrete", "Floor", .flat),
+        ("backpack", "Bag", .object), ("bag", "Bag", .object), ("suitcase", "Suitcase", .object), ("box", "Box", .object),
+        ("shoe", "Shoes", .object), ("sneaker", "Shoes", .object), ("boot", "Boots", .object), ("bottle", "Bottle", .object),
+        ("bucket", "Bucket", .object), ("basket", "Basket", .object), ("toy", "Toy", .object), ("ball", "Ball", .object),
+        ("skateboard", "Skateboard", .object), ("flowerpot", "Plant pot", .object), ("pot", "Pot", .object),
+        ("plant", "Plant", .object), ("rock", "Rock", .object), ("stone", "Rock", .object), ("brick", "Brick", .object),
+        ("trash", "Trash", .object), ("litter", "Litter", .object), ("cone", "Cone", .object), ("chair", "Chair", .object),
+        ("stool", "Stool", .object), ("dog", "Dog", .object), ("cat", "Cat", .object), ("package", "Package", .object),
+        ("umbrella", "Umbrella", .object), ("helmet", "Helmet", .object), ("book", "Book", .object),
+    ]
+
+    private static func groundGuess(in observations: [VNClassificationObservation]) -> (kind: GroundKind, name: String, confidence: Float)? {
+        for observation in observations.prefix(15) where observation.confidence >= 0.18 {
+            let id = observation.identifier.lowercased()
+            if let entry = groundNames.first(where: {
+                id == $0.key || id.hasPrefix($0.key + " ") || id.hasSuffix(" " + $0.key)
+                    || id.contains("_" + $0.key) || id.contains($0.key + "_") || id.contains(" " + $0.key + " ")
+            }) {
+                return (entry.kind, entry.name, observation.confidence)
+            }
+        }
+        return nil
+    }
+
     private static let objectNames: [(key: String, name: String)] = [
         // Ways through
         ("revolving door", "Revolving door"), ("sliding door", "Sliding door"), ("glass door", "Glass door"),
