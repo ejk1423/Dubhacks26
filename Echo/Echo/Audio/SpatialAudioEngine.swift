@@ -2,19 +2,24 @@
 //  SpatialAudioEngine.swift
 //  Echo
 //
-//  Directional "parking sensor" for AirPods, driven by `SceneSnapshot`s. Deliberately
-//  sparse: silence is the normal state, and a beep always means something is close.
+//  Binaural "parking sensor" for headphones, driven by `SceneSnapshot`s. Deliberately
+//  sparse: silence is the normal state, and a sound always means something is close.
 //
-//    * Wall pings: a short 1 kHz ping when an obstacle ahead is within `wallRange`
-//      (or anything at all is within `proximityRange`), in three distance zones
+//    * Wall ticks: a short broadband click from the direction of the nearest obstacle
+//      in front (or anything at all within `proximityRange`), in three distance zones
 //      (slow / medium / fast) rather than a continuous rate, so the zone is easy to hear.
-//    * Hazard beeps: a high triple-beep when a trip hazard ahead is within
-//      `hazardRange`, repeated every `hazardRepeat` while it is still there.
+//    * Hazard buzz: a low triple buzz from the direction of a trip hazard ahead,
+//      repeated every `hazardRepeat` while it is still there.
 //
-//  Direction is hard stereo panning, not HRTF: HRTF cues were too subtle to locate a
-//  wall. The azimuth (walking heading, corrected by the AirPods head yaw from
-//  `HeadTracker`) maps to pan on a steep curve: dead ahead is centred, and anything
-//  past `fullPanAngle` is entirely in one ear.
+//  Rendering goes through `AVAudioEnvironmentNode`, i.e. Apple's AUSpatialMixer, set up
+//  for headphones with the system's personalized HRTF profile when the user has one and
+//  the AirPods' own head tracking (`isListenerHeadTrackingEnabled`), so a sound stays on
+//  the wall while the head turns. Sources are placed relative to the phone's walking
+//  heading, which on iPhone is also the system head-tracking anchor. Azimuths are
+//  exaggerated by `azimuthGain` so small offsets are still clearly left or right.
+//
+//  The sounds are broadband on purpose: the ear localises clicks and buzzes far better
+//  than pure tones, whose HRTF cues are almost absent.
 //
 //  The session is `.playback` on purpose: `.playAndRecord` would drop AirPods to the
 //  mono hands-free profile and destroy the stereo cues. Bluetooth route changes stop
@@ -35,40 +40,40 @@ final class SpatialAudioEngine {
 
     var isMuted = false
     private(set) var isRunning = false
-    private(set) var headTrackingActive = false
+    private(set) var headphonesConnected = false
 
     // MARK: Tuning
 
-    /// Ping zones for the obstacle ahead: (max distance in metres, seconds between pings).
+    /// Tick zones for the obstacle ahead: (max distance in metres, seconds between ticks).
     @ObservationIgnored let wallZones: [(distance: Float, interval: TimeInterval)] = [
         (0.6, 0.25),
         (1.0, 0.7),
         (1.5, 1.8),
     ]
     var wallRange: Float { wallZones.last!.distance }
-    @ObservationIgnored let proximityRange: Float = 0.5     // anything this close pings, even beside you
+    @ObservationIgnored let proximityRange: Float = 0.5     // anything this close ticks, even beside or behind you
     @ObservationIgnored let hazardRange: Float = 1.5        // metres ahead
     @ObservationIgnored let hazardRepeat: TimeInterval = 2.0
-    @ObservationIgnored let fullPanAngle: Float = .pi / 4   // 45 degrees off-centre = one ear only
-    @ObservationIgnored let centreDeadZone: Float = 0.08    // ~5 degrees counts as dead ahead
+    @ObservationIgnored let azimuthGain: Float = 1.5        // 60 degrees off-centre renders at 90
+    @ObservationIgnored let hazardElevation: Float = -0.5   // metres below ear level at 1 m
 
     // MARK: Audio graph
 
-    @ObservationIgnored let headTracker = HeadTracker()
     @ObservationIgnored private let engine = AVAudioEngine()
+    @ObservationIgnored private let environment = AVAudioEnvironmentNode()
     @ObservationIgnored private let wallPlayer = AVAudioPlayerNode()
     @ObservationIgnored private let hazardPlayer = AVAudioPlayerNode()
     @ObservationIgnored private let format: AVAudioFormat
-    @ObservationIgnored private let wallPing: AVAudioPCMBuffer
-    @ObservationIgnored private let hazardBeeps: AVAudioPCMBuffer
+    @ObservationIgnored private let wallTick: AVAudioPCMBuffer
+    @ObservationIgnored private let hazardBuzz: AVAudioPCMBuffer
     @ObservationIgnored private let logger = Logger(subsystem: "echo.audio", category: "SpatialAudioEngine")
 
     // MARK: Scheduling
 
     @ObservationIgnored private var snapshot: SceneSnapshot?
     @ObservationIgnored private var snapshotTime: TimeInterval = 0
-    @ObservationIgnored private var lastWallPing: TimeInterval = 0
-    @ObservationIgnored private var lastHazardBeep: TimeInterval = 0
+    @ObservationIgnored private var lastWallTick: TimeInterval = 0
+    @ObservationIgnored private var lastHazardBuzz: TimeInterval = 0
     @ObservationIgnored private var hazardPlayingUntil: TimeInterval = 0
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
@@ -76,12 +81,27 @@ final class SpatialAudioEngine {
     // MARK: Init
 
     init() {
-        format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!   // mono, panned by the mixer
-        wallPing = Self.makeTone(format: format, frequency: 1_000, beepDuration: 0.04, beeps: 1, gap: 0)
-        hazardBeeps = Self.makeTone(format: format, frequency: 2_200, beepDuration: 0.03, beeps: 3, gap: 0.03)
+        format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!   // mono: required for 3D
+        wallTick = Self.makeClick(format: format)
+        hazardBuzz = Self.makeBuzz(format: format, frequency: 440, beepDuration: 0.06, beeps: 3, gap: 0.04)
 
+        engine.attach(environment)
         engine.attach(wallPlayer)
         engine.attach(hazardPlayer)
+
+        // Headphone binaural rendering with the AirPods' head tracking. Loudness is set
+        // here, so distance attenuation and reverb are off; they would only blur the cue.
+        environment.outputType = .headphones
+        environment.isListenerHeadTrackingEnabled = true
+        environment.distanceAttenuationParameters.rolloffFactor = 0
+        environment.reverbParameters.enable = false
+        environment.listenerPosition = AVAudio3DPoint(x: 0, y: 0, z: 0)
+        environment.listenerAngularOrientation = AVAudio3DAngularOrientation(yaw: 0, pitch: 0, roll: 0)
+        for player in [wallPlayer, hazardPlayer] {
+            player.renderingAlgorithm = .auto      // "use output type": best HRTF for headphones
+            player.sourceMode = .pointSource
+            player.reverbBlend = 0
+        }
     }
 
     // MARK: Lifecycle
@@ -91,7 +111,6 @@ final class SpatialAudioEngine {
         isRunning = true
         observeSystemEvents()
         restartEngine()
-        headTracker.start()
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -104,7 +123,6 @@ final class SpatialAudioEngine {
         timer = nil
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
-        headTracker.stop()
         wallPlayer.stop()
         hazardPlayer.stop()
         engine.stop()
@@ -126,9 +144,11 @@ final class SpatialAudioEngine {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try session.setActive(true)
+            updateRoute()
 
-            engine.connect(wallPlayer, to: engine.mainMixerNode, format: format)
-            engine.connect(hazardPlayer, to: engine.mainMixerNode, format: format)
+            engine.connect(environment, to: engine.mainMixerNode, format: nil)
+            engine.connect(wallPlayer, to: environment, format: format)
+            engine.connect(hazardPlayer, to: environment, format: format)
             engine.prepare()
             try engine.start()
             wallPlayer.play()
@@ -139,6 +159,12 @@ final class SpatialAudioEngine {
         }
     }
 
+    private func updateRoute() {
+        let headphonePorts: Set<AVAudioSession.Port> = [.headphones, .bluetoothA2DP, .bluetoothLE, .usbAudio]
+        let connected = AVAudioSession.sharedInstance().currentRoute.outputs.contains { headphonePorts.contains($0.portType) }
+        if headphonesConnected != connected { headphonesConnected = connected }
+    }
+
     private func observeSystemEvents() {
         let center = NotificationCenter.default
         // AirPods connecting/disconnecting changes the hardware format and stops the engine.
@@ -147,8 +173,9 @@ final class SpatialAudioEngine {
         })
         observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, !self.engine.isRunning else { return }
-                self.restartEngine()
+                guard let self else { return }
+                self.updateRoute()
+                if !self.engine.isRunning { self.restartEngine() }
             }
         })
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
@@ -162,67 +189,93 @@ final class SpatialAudioEngine {
 
     private func tick() {
         let now = ProcessInfo.processInfo.systemUptime
-        let headYaw = snapshot.flatMap { headTracker.relativeYaw(phoneYaw: Self.yaw(of: $0.heading)) }
-        if headTrackingActive != (headYaw != nil) { headTrackingActive = headYaw != nil }
-
         // Stale snapshot means the AR session stopped: stay silent rather than repeat old news.
         guard !isMuted, engine.isRunning, let snap = snapshot, now - snapshotTime < 0.5 else { return }
 
         // Trip hazards take priority.
         if let hazard = snap.tripHazards.first(where: { $0.distanceAhead > 0 && $0.distanceAhead <= hazardRange }) {
-            if now - lastHazardBeep >= hazardRepeat {
-                pan(hazardPlayer, toward: hazard.position, in: snap, headYaw: headYaw)
-                hazardPlayer.scheduleBuffer(hazardBeeps, completionHandler: nil)
-                lastHazardBeep = now
-                hazardPlayingUntil = now + Double(hazardBeeps.frameLength) / format.sampleRate + 0.1
+            if now - lastHazardBuzz >= hazardRepeat {
+                place(hazardPlayer, toward: hazard.position, in: snap, elevation: hazardElevation)
+                hazardPlayer.scheduleBuffer(hazardBuzz, completionHandler: nil)
+                lastHazardBuzz = now
+                hazardPlayingUntil = now + Double(hazardBuzz.frameLength) / format.sampleRate + 0.1
             }
         }
         guard now >= hazardPlayingUntil else { return }   // don't talk over the hazard alert
 
-        // The obstacle ahead, or anything (beside or behind too) that is very close.
-        var target = snap.nearestForwardObstacle.flatMap { $0.horizontalDistance <= wallRange ? $0 : nil }
-        if target == nil, let near = snap.nearestObstacle, near.horizontalDistance <= proximityRange {
-            target = near
+        // Whatever is closest in front of us: the corridor straight ahead, or the nearest
+        // thing in the forward half-plane. Behind or beside only counts when very close.
+        var target: ObstacleHit?
+        func consider(_ hit: ObstacleHit?, within range: Float) {
+            guard let hit, hit.horizontalDistance <= range,
+                  hit.horizontalDistance < (target?.horizontalDistance ?? .infinity) else { return }
+            target = hit
+        }
+        consider(snap.nearestForwardObstacle, within: wallRange)
+        if let near = snap.nearestObstacle {
+            consider(near, within: Self.isInFront(near.point, in: snap) ? wallRange : proximityRange)
         }
         guard let wall = target,
               let zone = wallZones.first(where: { wall.horizontalDistance <= $0.distance }),
-              now - lastWallPing >= zone.interval else { return }
+              now - lastWallTick >= zone.interval else { return }
 
-        pan(wallPlayer, toward: wall.point, in: snap, headYaw: headYaw)
-        wallPlayer.scheduleBuffer(wallPing, completionHandler: nil)
-        lastWallPing = now
+        place(wallPlayer, toward: wall.point, in: snap, elevation: 0)
+        wallPlayer.scheduleBuffer(wallTick, completionHandler: nil)
+        lastWallTick = now
     }
 
-    /// Pans `player` toward the horizontal direction of `point`, hard-left/right past `fullPanAngle`.
-    private func pan(_ player: AVAudioPlayerNode, toward point: SIMD3<Float>, in snap: SceneSnapshot,
-                     headYaw: Float?) {
+    private static func isInFront(_ point: SIMD3<Float>, in snap: SceneSnapshot) -> Bool {
+        let d = point - snap.cameraPosition
+        return d.x * snap.heading.x + d.z * snap.heading.z > 0
+    }
+
+    /// Places `player` 1 m from the listener toward `point`, with the azimuth exaggerated
+    /// by `azimuthGain` and clamped to the sides (never behind, which the ear confuses
+    /// with ahead).
+    private func place(_ player: AVAudioPlayerNode, toward point: SIMD3<Float>, in snap: SceneSnapshot,
+                       elevation: Float) {
         let heading = snap.heading
         let right = simd_normalize(simd_cross(heading, SIMD3(0, 1, 0)))
         let d = point - snap.cameraPosition
         let ahead = d.x * heading.x + d.z * heading.z
         let side = d.x * right.x + d.z * right.z
 
-        // Azimuth relative to where the head points: right positive. Turning the head left
-        // (positive yaw) moves everything to the right.
-        var azimuth = atan2(side, ahead)
-        if let yaw = headYaw { azimuth += yaw }
-        azimuth = atan2(sin(azimuth), cos(azimuth))
-
-        let magnitude = abs(azimuth) <= centreDeadZone ? 0 : min(abs(azimuth) / fullPanAngle, 1)
-        // Square-root curve: small angles already move the sound clearly to one side.
-        player.pan = (azimuth < 0 ? -1 : 1) * magnitude.squareRoot()
+        var azimuth = atan2(side, ahead) * azimuthGain          // right positive
+        azimuth = max(-.pi / 2, min(.pi / 2, azimuth))
+        // Listener faces -Z; +X is right.
+        player.position = AVAudio3DPoint(x: sin(azimuth), y: elevation, z: -cos(azimuth))
         player.volume = 1
     }
 
-    // MARK: Helpers
+    // MARK: Sounds
 
-    /// Yaw of a horizontal heading, counter-clockwise positive, 0 = -Z (matches CoreMotion's sense).
-    private static func yaw(of heading: SIMD3<Float>) -> Float {
-        atan2(-heading.x, -heading.z)
+    /// A 2-pulse broadband click (noise bursts with a sharp attack and ~4 ms decay).
+    /// Clicks carry the interaural time and spectral cues that make a sound easy to place.
+    private static func makeClick(format: AVAudioFormat) -> AVAudioPCMBuffer {
+        let rate = format.sampleRate
+        let pulse = Int(0.012 * rate)
+        let gap = Int(0.03 * rate)
+        let total = 2 * pulse + gap
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(total))!
+        buffer.frameLength = AVAudioFrameCount(total)
+        let samples = buffer.floatChannelData![0]
+        for i in 0..<total { samples[i] = 0 }
+        var seed: UInt32 = 0x9E3779B9
+        for start in [0, pulse + gap] {
+            for i in 0..<pulse {
+                seed = seed &* 1_664_525 &+ 1_013_904_223
+                let noise = Float(seed >> 8) / Float(1 << 24) * 2 - 1
+                let decay = exp(-Double(i) / (0.004 * rate))
+                // Blend in a 3 kHz tone so the click has a clear pitch on top of the noise.
+                let tone = sin(2 * .pi * 3_000 * Double(i) / rate)
+                samples[start + i] = Float(0.9 * decay) * (0.6 * noise + Float(0.4 * tone))
+            }
+        }
+        return buffer
     }
 
-    /// Mono sine beeps with 5 ms raised-cosine edges so they don't click.
-    private static func makeTone(format: AVAudioFormat, frequency: Double, beepDuration: Double,
+    /// Sawtooth-like buzz (harmonics 1-8) with 5 ms raised-cosine edges so it doesn't click.
+    private static func makeBuzz(format: AVAudioFormat, frequency: Double, beepDuration: Double,
                                  beeps: Int, gap: Double) -> AVAudioPCMBuffer {
         let rate = format.sampleRate
         let beepFrames = Int(beepDuration * rate)
@@ -239,7 +292,9 @@ final class SpatialAudioEngine {
                 var envelope: Double = 1
                 if i < edge { envelope = 0.5 - 0.5 * cos(.pi * Double(i) / Double(edge)) }
                 if i > beepFrames - edge { envelope = 0.5 - 0.5 * cos(.pi * Double(beepFrames - i) / Double(edge)) }
-                samples[start + i] = Float(0.8 * envelope * sin(2 * .pi * frequency * Double(i) / rate))
+                var value = 0.0
+                for h in 1...8 { value += sin(2 * .pi * frequency * Double(h) * Double(i) / rate) / Double(h) }
+                samples[start + i] = Float(0.5 * envelope * value)
             }
         }
         return buffer

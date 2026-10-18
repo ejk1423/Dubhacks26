@@ -49,7 +49,7 @@ nonisolated struct PerceptionConfig: Sendable {
     var minObstacleVertices: Int = 8       // vertices in one sector/distance bin before it counts as an obstacle
     var obstacleReleaseRate: Float = 0.5   // m/s a sector reading may recede (approaching is instant)
     var chunkEvictionRadius: Float = 15.0  // stored mesh farther than this is dropped
-    var forwardConeHalfAngle: Float = .pi / 4
+    var forwardHalfWidth: Float = 0.35     // half-width of the "straight ahead" corridor
 
     // Scheduling and rendering.
     var analysisInterval: TimeInterval = 0.1   // 10 Hz hazard + sonar analysis
@@ -58,6 +58,7 @@ nonisolated struct PerceptionConfig: Sendable {
     var renderRadius: Float = 3.0              // wireframe chunks farther than this are hidden
     var dotSpacing: Float = 0.2                // one rendered dot per voxel of this size
     var dotRadius: Float = 0.006               // half-size of each dot
+    var dotMinVertices: Int = 3                // vertices a voxel needs before it gets a dot
     var hazardOverlayLift: Float = 0.015       // lift the red overlay above the mesh to avoid z-fighting
     var maxOverlayTriangles: Int = 20_000
 }
@@ -204,6 +205,7 @@ nonisolated struct SceneSnapshot: Sendable {
     let nearestForwardObstacle: ObstacleHit?
     /// Nearest obstacle distance in 8 yaw sectors of 45 degrees: index 0 = ahead, 2 = right,
     /// 4 = behind, 6 = left. `.infinity` when the sector is clear.
+    /// `nearestForwardObstacle` is the closest thing in a narrow corridor straight ahead.
     let sectorDistances: [Float]
     let tripHazards: [TripHazard]
     let meshAnchorCount: Int

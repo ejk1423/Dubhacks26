@@ -28,8 +28,8 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 badge(manager.capabilities.hasLiDAR ? "LiDAR ✓ · \(manager.meshAnchorCount) chunks" : "No LiDAR",
                       ok: manager.capabilities.hasLiDAR)
-                badge(audio.headTrackingActive ? "AirPods ✓" : "No head tracking",
-                      ok: audio.headTrackingActive)
+                badge(audio.headphonesConnected ? "Headphones ✓" : "Use headphones",
+                      ok: audio.headphonesConnected)
             }
             if let message = statusMessage {
                 Text(message)
@@ -56,7 +56,7 @@ struct ContentView: View {
     private var statusMessage: String? {
         switch manager.status {
         case .running:
-            return manager.snapshot?.groundSource == .assumed ? "Point the phone at the floor…" : nil
+            return manager.snapshot?.groundSource == .assumed ? "Finding the floor…" : nil
         case .idle: return "Idle"
         case .starting: return "Starting…"
         case .limited(let reason): return reason
@@ -83,19 +83,11 @@ struct ContentView: View {
             }
             .accessibilityElement(children: .combine)
 
-            HStack(spacing: 16) {
-                Button {
-                    audio.isMuted.toggle()
-                } label: {
-                    Label(audio.isMuted ? "Unmute" : "Mute",
-                          systemImage: audio.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                }
-                Button {
-                    audio.headTracker.recenter()
-                } label: {
-                    Label("Recenter", systemImage: "scope")
-                }
-                .disabled(!audio.headTrackingActive)
+            Button {
+                audio.isMuted.toggle()
+            } label: {
+                Label(audio.isMuted ? "Unmute" : "Mute",
+                      systemImage: audio.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
             }
             .buttonStyle(.borderedProminent)
             .tint(.black.opacity(0.6))
@@ -108,7 +100,7 @@ struct ContentView: View {
     }
 
     private var distanceText: String {
-        guard manager.status == .running, manager.snapshot?.groundSource != .assumed else { return "–" }
+        guard manager.status == .running, manager.snapshot != nil else { return "–" }
         guard let d = forwardDistance else { return "Clear" }
         return String(format: "%.1f m", d)
     }
