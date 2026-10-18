@@ -19,10 +19,10 @@
 //    * Tick (one soft high click): the way ahead just became clear after being blocked.
 //    * Two-tone chime (rising): a spoken warning is about to follow; listen.
 //
-//  Direction is a gentle nuance, not the message: the beep is mixed to stereo with a
-//  small level and time difference toward the target's bearing (capped at
-//  `maxLateral`), so a post slightly to the left reads as slightly left while the beep
-//  stays clearly "in front".
+//  Direction is a clear nuance, not the message: the beep is panned toward the target
+//  with a constant-power pan, a short interaural delay and a head-shadow low-pass on
+//  the far ear (scaled by `stereoWidth`, capped so it never sits fully in one ear), so
+//  a post to the left reads as left while the beep still says "in your way".
 //
 //  The session is `.playback` on purpose: `.playAndRecord` would drop AirPods to the
 //  mono hands-free profile. Bluetooth route changes stop `AVAudioEngine`, so
@@ -80,9 +80,14 @@ final class SpatialAudioEngine {
     @ObservationIgnored let blockedHold: TimeInterval = 0.4     // seconds blocked before clearing earns a tick
     @ObservationIgnored let clearHold: TimeInterval = 0.45      // seconds clear before the tick plays
 
-    @ObservationIgnored let maxLateral: Float = 0.5             // sin(bearing) cap: never more than mildly off-centre
-    @ObservationIgnored let maxILD: Float = 6                   // dB quieter in the far ear at maxLateral
-    @ObservationIgnored let maxITD: Float = 0.0003              // seconds later in the far ear at maxLateral
+    /// Stereo width, 0.5 (nearly centred) ... 1.5 (wide). 1 maps a 45-degree bearing to
+    /// about two thirds of the way to one ear; the beep never goes fully to one side.
+    var stereoWidth: Float = 1.0
+    @ObservationIgnored let pathHalfWidth: Float = 0.5          // metres either side of the walking line that counts as "in the way"
+    @ObservationIgnored let maxLateral: Float = 0.85            // pan position cap (0 centre ... 1 one ear)
+    @ObservationIgnored let maxITD: Float = 0.00045             // seconds later in the far ear at full lateral
+    @ObservationIgnored let shadowCutoff: Float = 3_000         // Hz low-pass on the far ear at full lateral
+    @ObservationIgnored let renderLatency: Float = 0.1          // seconds between scheduling a beep and hearing it
 
     // MARK: Audio graph
 
@@ -101,6 +106,9 @@ final class SpatialAudioEngine {
     @ObservationIgnored private var lastBeep: TimeInterval = 0
     @ObservationIgnored private var beepsHeldUntil: TimeInterval = 0
     @ObservationIgnored private var targetHistory: [(time: TimeInterval, distance: Float)] = []
+    @ObservationIgnored private var smoothedBearing: Float?
+    @ObservationIgnored private var smoothedDistance: Float?
+    @ObservationIgnored private var trackedPoint: SIMD3<Float>?
     @ObservationIgnored private var blockedSince: TimeInterval?
     @ObservationIgnored private var wasBlocked = false
     @ObservationIgnored private var clearSince: TimeInterval?
@@ -249,27 +257,57 @@ final class SpatialAudioEngine {
             return
         }
 
-        // Nearest surface in the forward cone.
-        var target: (hit: ObstacleHit, bearing: Float)?
+        // The thing you would actually hit: among surfaces inside the walking line (shoulder
+        // width either side of the heading), the one with the least distance *along* the
+        // heading. Something a metre to the side that you are walking past is not a target.
+        // A little hysteresis keeps the same obstacle when two are close, so the beeps do
+        // not flip between them.
+        var best: (hit: ObstacleHit, along: Float, bearing: Float)?
         func consider(_ hit: ObstacleHit?) {
             guard let hit, hit.horizontalDistance <= maxRange else { return }
             let bearing = self.bearing(of: hit.point, in: snap)
-            guard abs(bearing) <= coneHalfAngle,
-                  hit.horizontalDistance < (target?.hit.horizontalDistance ?? .infinity) else { return }
-            target = (hit, bearing)
+            guard abs(bearing) <= coneHalfAngle else { return }
+            let along = hit.horizontalDistance * cos(bearing)
+            let aside = abs(hit.horizontalDistance * sin(bearing))
+            guard along > 0.05, aside <= pathHalfWidth + 0.1 else { return }
+            var score = along
+            if let tracked = trackedPoint, simd_length((hit.point - tracked).xz) < 0.4 { score -= 0.2 }
+            if score < (best.map { $0.along - ($0.hit.point == trackedPoint ? 0.2 : 0) } ?? .infinity) {
+                best = (hit, along, bearing)
+            }
         }
         consider(snap.nearestForwardObstacle)
         for hit in snap.fineSectorHits { consider(hit) }
 
-        guard let target else {
+        guard let target = best else {
             closeness = 0
             targetDistance = nil
             targetBearing = nil
             targetHistory.removeAll()
+            smoothedBearing = nil
+            smoothedDistance = nil
+            trackedPoint = nil
             trackClearing(closeness: 0, now: now)
             return
         }
-        let distance = target.hit.horizontalDistance
+        trackedPoint = target.hit.point
+
+        // Smooth what the ear hears: approach instantly, recede gently; bearing eased.
+        let rawDistance = target.hit.horizontalDistance
+        let distance: Float
+        if let previous = smoothedDistance, rawDistance > previous {
+            distance = previous + (rawDistance - previous) * 0.35
+        } else {
+            distance = rawDistance
+        }
+        smoothedDistance = distance
+        let bearingNow: Float
+        if let previous = smoothedBearing {
+            bearingNow = previous + (target.bearing - previous) * 0.4
+        } else {
+            bearingNow = target.bearing
+        }
+        smoothedBearing = bearingNow
 
         // Closing speed over the last ~0.6 s of readings.
         targetHistory.append((snap.timestamp, distance))
@@ -286,7 +324,7 @@ final class SpatialAudioEngine {
         let c = min(1, max(0, (range - distance) / (range - touchDistance)))
         closeness = c
         targetDistance = distance
-        targetBearing = target.bearing
+        targetBearing = bearingNow
         trackClearing(closeness: c, now: now)
 
         let imminent = distance <= imminentRange
@@ -302,11 +340,16 @@ final class SpatialAudioEngine {
         guard !isMuted, !hapticsOnly else { return }
 
         // Low and soft until the last stretch: pitch only climbs in the final 30 cm or so.
+        // Head-height obstacles (a sign, a branch) sit a fifth higher so they sound different.
         let urgency = c * c * c
-        let beep = Self.beep(rate: stereo.sampleRate, frequency: 520 + 600 * Double(urgency),
-                             duration: c > 0.95 ? 0.09 : 0.04)
+        let overhead = snap.nearestOverheadObstacle.map { abs($0.horizontalDistance - rawDistance) < 0.2 } ?? false
+        let frequency = (520 + 600 * Double(urgency)) * (overhead ? 1.5 : 1)
+        let beep = Self.beep(rate: stereo.sampleRate, frequency: frequency, duration: c > 0.95 ? 0.09 : 0.045)
         let gain = (0.10 + 0.6 * c * c) * (ducked ? 0.4 : 1)
-        beepPlayer.scheduleBuffer(render(beep, azimuth: target.bearing, gain: gain), completionHandler: nil)
+        // Pan for where the obstacle will be when the sound comes out, not where it was.
+        let predicted = max(0.1, distance - closingSpeed * renderLatency)
+        let bearingAtPlay = atan2(sin(bearingNow) * distance, max(0.05, cos(bearingNow) * distance - (distance - predicted)))
+        beepPlayer.scheduleBuffer(render(beep, azimuth: bearingAtPlay, gain: gain), completionHandler: nil)
     }
 
     /// Blocked-then-clear detection for the clear tick: the user must have been properly
@@ -341,44 +384,68 @@ final class SpatialAudioEngine {
 
     // MARK: Stereo rendering
 
-    /// Mixes a mono cue to stereo, nudged toward `azimuth` with a small level and time
-    /// difference. Capped so the cue always reads as "ahead".
+    /// Mixes a mono cue to stereo at `azimuth` with the three cues the ear uses to place
+    /// a sound sideways: a constant-power pan (equal loudness at every angle), a short
+    /// interaural delay, and a head-shadow low-pass on the far ear. `stereoWidth` scales
+    /// how far a given bearing moves the sound; it never goes fully to one ear.
     private func render(_ mono: [Float], azimuth: Float, gain: Float) -> AVAudioPCMBuffer {
         let rate = Float(stereo.sampleRate)
-        let lateral = max(-maxLateral, min(maxLateral, sin(azimuth)))
-        let side = abs(lateral) / maxLateral
-        let farGain = pow(10, -maxILD * side / 20)
+        let lateral = max(-maxLateral, min(maxLateral, sin(azimuth * 1.4 * stereoWidth)))   // -1 ... 1
+        let side = abs(lateral)
+        // Constant-power pan: theta 0 = hard left, pi/2 = hard right.
+        let theta = (lateral + 1) / 2 * (.pi / 2)
+        let gainL = cos(theta), gainR = sin(theta)
         let farDelay = Int(maxITD * side * rate)
+        let cutoff = 20_000 - (20_000 - shadowCutoff) * side
+        let alpha = 1 - exp(-2 * .pi * cutoff / rate)
         let volume = gain * masterVolume
 
         let frames = mono.count + farDelay
         let buffer = AVAudioPCMBuffer(pcmFormat: stereo, frameCapacity: AVAudioFrameCount(frames))!
         buffer.frameLength = AVAudioFrameCount(frames)
-        let near = buffer.floatChannelData![lateral < 0 ? 0 : 1]
-        let far = buffer.floatChannelData![lateral < 0 ? 1 : 0]
+        let left = buffer.floatChannelData![0]
+        let right = buffer.floatChannelData![1]
+        let nearIsLeft = lateral < 0
+        var shadowed: Float = 0
         for i in 0..<frames {
-            near[i] = i < mono.count ? mono[i] * volume : 0
-            let delayed = i - farDelay
-            far[i] = delayed >= 0 && delayed < mono.count ? mono[delayed] * farGain * volume : 0
+            let direct = i < mono.count ? mono[i] : 0
+            let d = i - farDelay
+            let late = d >= 0 && d < mono.count ? mono[d] : 0
+            shadowed += alpha * (late - shadowed)
+            if nearIsLeft {
+                left[i] = direct * gainL * volume
+                right[i] = shadowed * gainR * volume
+            } else {
+                right[i] = direct * gainR * volume
+                left[i] = shadowed * gainL * volume
+            }
         }
         return buffer
     }
 
     // MARK: Sounds
 
-    /// A clean beep: sine with a faint second harmonic, 3 ms attack, 15 ms release.
+    /// A clean beep that can still be placed: a sine with a faint upper partial (2.5 f,
+    /// where the ear's level and time cues work) and a 1 ms onset tick, 3 ms attack,
+    /// 18 ms release. Pure sines are the hardest sounds to localise.
     private static func beep(rate: Double, frequency: Double, duration: Double) -> [Float] {
         let n = Int(duration * rate)
-        let attack = Int(0.004 * rate)
-        let release = Int(0.02 * rate)
+        let attack = Int(0.003 * rate)
+        let release = Int(0.018 * rate)
+        let tick = Int(0.0012 * rate)
         var out = [Float](repeating: 0, count: n)
+        var seed: UInt32 = 0x1234_5678
         for i in 0..<n {
             let t = Double(i) / rate
             var env = 1.0
             if i < attack { env = Double(i) / Double(attack) }
             if i > n - release { env = Double(n - i) / Double(release) }
-            let value = sin(2 * .pi * frequency * t) + 0.05 * sin(4 * .pi * frequency * t)
-            out[i] = Float(0.7 * env * value)
+            var value = sin(2 * .pi * frequency * t) + 0.16 * sin(2 * .pi * frequency * 2.5 * t)
+            if i < tick {
+                seed = seed &* 1_664_525 &+ 1_013_904_223
+                value += 0.35 * (Double(seed >> 8) / Double(1 << 24) * 2 - 1) * (1 - Double(i) / Double(tick))
+            }
+            out[i] = Float(0.66 * env * value)
         }
         return out
     }

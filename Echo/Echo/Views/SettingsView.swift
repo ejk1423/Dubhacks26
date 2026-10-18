@@ -79,6 +79,13 @@ struct SettingsView: View {
             Toggle(isOn: $audio.hapticsEnabled) {
                 Label("Haptic Ticks", systemImage: "iphone.radiowaves.left.and.right")
             }
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.left.and.right").foregroundStyle(.secondary)
+                Slider(value: $audio.stereoWidth, in: 0.5...1.5)
+                    .accessibilityLabel("Stereo width")
+                    .accessibilityValue("\(Int((audio.stereoWidth * 100).rounded())) percent")
+                Image(systemName: "arrow.left.and.right.square.fill").foregroundStyle(.secondary)
+            }
             Toggle(isOn: Binding(get: { narrator.earconsEnabled }, set: { narrator.earconsEnabled = $0; audio.earconsEnabled = $0 })) {
                 Label("Chimes Before Warnings", systemImage: "bell.badge.waveform")
             }
