@@ -49,7 +49,7 @@ nonisolated struct PerceptionConfig: Sendable {
     var minObstacleVertices: Int = 8       // vertices in one sector/distance bin before it counts as an obstacle
     var obstacleReleaseRate: Float = 0.5   // m/s a sector reading may recede (approaching is instant)
     var chunkEvictionRadius: Float = 15.0  // stored mesh farther than this is dropped
-    var forwardHalfWidth: Float = 0.35     // half-width of the "straight ahead" corridor
+    var forwardHalfWidth: Float = 0.4      // half-width of the walking corridor (shoulder width)
 
     // Scheduling and rendering.
     var analysisInterval: TimeInterval = 0.1   // 10 Hz hazard + sonar analysis

@@ -80,6 +80,7 @@ actor MeshGeometryStore {
     private var totalVertices = 0
     private var lastGround: Float?
     private var lastAnalysisTime: TimeInterval?
+    private var lastHeading: SIMD3<Float>?
     /// Fine sonar sectors (15 degrees each, index 0 centred dead ahead, clockwise).
     private static let sectorCount = 24
     private var smoothedSectors = [Float](repeating: .infinity, count: sectorCount)
@@ -216,6 +217,7 @@ actor MeshGeometryStore {
 
     private func resetTracking() {
         lastAnalysisTime = nil
+        lastHeading = nil
         smoothedSectors = [Float](repeating: .infinity, count: Self.sectorCount)
         sectorHits = [ObstacleHit?](repeating: nil, count: Self.sectorCount)
         sectorStreaks = [Int](repeating: 0, count: Self.sectorCount)
@@ -232,16 +234,19 @@ actor MeshGeometryStore {
         let cfg = config
         let p0 = cameraTransform.translation
 
-        // Walking direction. ARKit camera space is landscape-right: -Z is the view
-        // direction and +X is the top edge of a portrait phone. Summing both XZ
-        // projections gives a stable forward vector whether the phone is held level
-        // or pitched down at the floor.
-        let camX = SIMD3(cameraTransform.columns.0.x, cameraTransform.columns.0.y, cameraTransform.columns.0.z)
+        // Walking direction: the camera's view direction (-Z) projected onto the floor.
+        // Nothing else is mixed in: adding the phone's long axis made the heading swing
+        // sideways with every roll of the hand, which made every bearing wander. When the
+        // phone is pointed almost straight down the projection is meaningless, so the
+        // previous heading is kept.
         let camZ = SIMD3(cameraTransform.columns.2.x, cameraTransform.columns.2.y, cameraTransform.columns.2.z)
-        var heading = (-camZ).xz + camX.xz
-        if simd_length(heading) < 0.05 { heading = (-camZ).xz }
-        if simd_length(heading) < 1e-4 { heading = SIMD3(0, 0, -1) }
-        heading = simd_normalize(heading)
+        var heading = (-camZ).xz
+        if simd_length(heading) >= 0.3 {
+            heading = simd_normalize(heading)
+        } else {
+            heading = lastHeading ?? SIMD3(0, 0, -1)
+        }
+        lastHeading = heading
         let right = simd_normalize(simd_cross(heading, SIMD3(0, 1, 0)))
 
         // ---- 0. Forget mesh far behind us so memory stays bounded --------------
