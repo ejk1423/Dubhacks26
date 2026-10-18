@@ -3,8 +3,8 @@
 //  Echo
 //
 //  Turns `WireframeMeshData` into RealityKit entities drawn as glowing wireframes
-//  (Tesla FSD style): one `ModelEntity` per ARMeshAnchor with per-face material
-//  buckets, plus a red overlay entity for the current trip hazards.
+//  (drawn as sparse dots): one `ModelEntity` per ARMeshAnchor with per-face material
+//  buckets, plus a translucent red overlay entity for the current trip hazards.
 //
 //  Line rendering uses `UnlitMaterial.triangleFillMode = .lines`, so the colours are
 //  independent of scene lighting and stay bright over a dimmed camera feed.
@@ -41,7 +41,8 @@ final class WireframeRenderer {
 
         static func opacity(for bucket: SurfaceBucket) -> Float {
             switch bucket {
-            case .floor, .wall, .furniture: return 0.95
+            case .floor:                    return 0.4    // walkable; recede so obstacles stand out
+            case .wall, .furniture:         return 0.95
             case .ceiling:                  return 0.45
             case .unknown:                  return 0.55
             }
@@ -60,9 +61,7 @@ final class WireframeRenderer {
     private var sequences: [UUID: UInt64] = [:]
     private var bucketMaterials: [SurfaceBucket: UnlitMaterial] = [:]
 
-    private let hazardLines: ModelEntity
     private let hazardFill: ModelEntity
-    private let hazardLineMaterial: UnlitMaterial
     private let hazardFillMaterial: UnlitMaterial
 
     // MARK: Init
@@ -77,23 +76,17 @@ final class WireframeRenderer {
             bucketMaterials[bucket] = Self.makeMaterial(
                 Palette.color(for: bucket),
                 opacity: Palette.opacity(for: bucket),
-                lines: true
+                lines: false
             )
         }
 
-        hazardLineMaterial = Self.makeMaterial(Palette.hazard, opacity: 1.0, lines: true)
         hazardFillMaterial = Self.makeMaterial(Palette.hazard, opacity: 0.25, lines: false)
-
-        hazardLines = ModelEntity()
-        hazardLines.name = "echo.hazard.lines"
-        hazardLines.isEnabled = false
 
         hazardFill = ModelEntity()
         hazardFill.name = "echo.hazard.fill"
         hazardFill.isEnabled = false
 
         root.addChild(hazardFill)
-        root.addChild(hazardLines)
     }
 
     func attach(to arView: ARView) {
@@ -154,7 +147,6 @@ final class WireframeRenderer {
         for entity in meshEntities.values { entity.removeFromParent() }
         meshEntities.removeAll()
         sequences.removeAll()
-        hazardLines.isEnabled = false
         hazardFill.isEnabled = false
     }
 
@@ -172,7 +164,6 @@ final class WireframeRenderer {
     /// Replaces the red overlay with the current hazard triangles (world space).
     func updateHazardOverlay(_ overlay: HazardOverlayData) {
         guard !overlay.isEmpty, overlay.positions.count >= 3 else {
-            hazardLines.isEnabled = false
             hazardFill.isEnabled = false
             return
         }
@@ -184,13 +175,10 @@ final class WireframeRenderer {
 
         do {
             let mesh = try MeshResource.generate(from: [descriptor])
-            hazardLines.model = ModelComponent(mesh: mesh, materials: [hazardLineMaterial])
             hazardFill.model = ModelComponent(mesh: mesh, materials: [hazardFillMaterial])
-            hazardLines.isEnabled = true
             hazardFill.isEnabled = true
         } catch {
             logger.error("Hazard overlay generation failed: \(error.localizedDescription, privacy: .public)")
-            hazardLines.isEnabled = false
             hazardFill.isEnabled = false
         }
     }
@@ -201,6 +189,7 @@ final class WireframeRenderer {
         var material = UnlitMaterial(color: color)
         material.triangleFillMode = lines ? .lines : .fill
         material.blending = .transparent(opacity: .init(floatLiteral: opacity))
+        material.faceCulling = .none
         return material
     }
 }

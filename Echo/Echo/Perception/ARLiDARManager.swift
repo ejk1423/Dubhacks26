@@ -30,7 +30,7 @@ final class ARLiDARManager: NSObject {
     private(set) var capabilities = DeviceCapabilities()
     private(set) var snapshot: SceneSnapshot?
     private(set) var meshAnchorCount = 0
-    private(set) var cameraFeedMode: CameraFeedMode = .dimmed(ev: -2.5)
+    private(set) var cameraFeedMode: CameraFeedMode = .full
 
     /// Convenience accessors for the HUD.
     var nearestObstacleDistance: Float? { snapshot?.nearestObstacle?.horizontalDistance }
@@ -58,6 +58,7 @@ final class ARLiDARManager: NSObject {
     @ObservationIgnored private var sequence: UInt64 = 0
     @ObservationIgnored private var lastAnalysisTime: TimeInterval = 0
     @ObservationIgnored private var analysisInFlight = false
+    @ObservationIgnored private var upsertsInFlight = 0
     @ObservationIgnored private var isRunning = false
 
     // MARK: Init
@@ -77,6 +78,7 @@ final class ARLiDARManager: NSObject {
 
     /// Starts (or restarts) world tracking with LiDAR mesh reconstruction.
     func start() {
+        guard !isRunning else { return }   // a repeated onAppear must not wipe the map
         guard capabilities.worldTracking else {
             status = .unsupported("ARKit world tracking is not available on this device.")
             return
@@ -141,12 +143,8 @@ final class ARLiDARManager: NSObject {
             configuration.sceneReconstruction = .mesh
         }
 
-        // Depth map for the vision tracker (Step 4). Smoothed is temporally stable.
-        if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
-            configuration.frameSemantics.insert(.smoothedSceneDepth)
-        } else if capabilities.sceneDepth {
-            configuration.frameSemantics.insert(.sceneDepth)
-        }
+        // No `.sceneDepth` frame semantics until something consumes the depth map: it costs
+        // GPU time and heat, and thermal pressure interrupts the session.
         return configuration
     }
 
@@ -215,17 +213,23 @@ final class ARLiDARManager: NSObject {
     }
 
     /// Converts at most `config.maxAnchorUpdatesPerFrame` queued anchors per frame so a
-    /// burst of mesh refinements never stalls the render loop.
+    /// burst of mesh refinements never stalls the render loop. Anchors stay coalesced in
+    /// `pendingAnchors` while `config.maxUpsertsInFlight` chunks are already with the store,
+    /// so a slow store applies backpressure instead of piling up chunk copies in memory.
     private func drainPendingAnchors(timestamp: TimeInterval) {
         var processed = 0
-        while processed < config.maxAnchorUpdatesPerFrame, !pendingOrder.isEmpty {
+        while processed < config.maxAnchorUpdatesPerFrame,
+              upsertsInFlight < config.maxUpsertsInFlight,
+              !pendingOrder.isEmpty {
             let id = pendingOrder.removeFirst()
             guard let anchor = pendingAnchors.removeValue(forKey: id) else { continue }
             sequence += 1
             guard let chunk = Self.makeChunk(from: anchor, sequence: sequence, timestamp: timestamp) else { continue }
             processed += 1
+            upsertsInFlight += 1
             Task {
                 let data = await store.upsert(chunk)
+                upsertsInFlight -= 1
                 renderer.apply(data)
             }
         }
@@ -242,6 +246,7 @@ final class ARLiDARManager: NSObject {
             let result = await store.analyze(cameraTransform: transform, timestamp: timestamp)
             snapshot = result.snapshot
             meshAnchorCount = result.snapshot.meshAnchorCount
+            for id in result.evicted { renderer.remove(anchorID: id) }
             renderer.updateHazardOverlay(result.overlay)
             renderer.cull(around: result.snapshot.cameraPosition, radius: config.renderRadius)
             onSnapshot?(result.snapshot)
@@ -381,12 +386,12 @@ extension ARLiDARManager: @preconcurrency ARSessionDelegate {
     }
 
     func sessionInterruptionEnded(_ session: ARSession) {
-        // The old map is unreliable after an interruption; start clean rather than relocalize.
-        reset()
-        status = .running
+        // Keep the map: ARKit relocalizes against it, and tracking state updates `status`.
+        // Wiping it here made the whole scene vanish after every notification banner.
+        status = .starting
     }
 
     func sessionShouldAttemptRelocalization(_ session: ARSession) -> Bool {
-        false
+        true
     }
 }

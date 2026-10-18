@@ -5,14 +5,16 @@
 //  Actor that owns a copy of every LiDAR mesh chunk and does all of the heavy
 //  geometry math off the main thread:
 //
-//    * builds wireframe render data (per-face material buckets) for each chunk,
+//    * builds point-cloud render data (per-face material buckets) for each chunk,
 //    * estimates the local ground plane (ARPlaneAnchor floor, cross-checked
 //      against the median height of floor-classified mesh vertices),
-//    * finds the nearest obstacle for the wall sonar (overall, forward cone and
-//      per 45-degree sector),
+//    * finds the nearest obstacle for the wall sonar per 45-degree sector, using a
+//      distance histogram (a bin needs several vertices, so one stray vertex is not
+//      a wall) smoothed over time (approach is instant, recession is rate-limited),
 //    * scans a 1-3 m corridor along the walking direction for negative drops
 //      (potholes, stairs) and positive spikes (curbs, rocks) relative to ground,
-//      clusters them into `TripHazard`s and emits the red overlay triangles.
+//      clusters them into `TripHazard`s, reports only those that persist over several
+//      analyses, and emits the red overlay triangles.
 //
 //  Only `Sendable` value types cross into or out of this actor.
 //
@@ -56,9 +58,17 @@ actor MeshGeometryStore {
         case none = 0, drop, bump, unknown
     }
 
+    private struct TrackedHazard {
+        var hazard: TripHazard
+        var streak: Int
+        var cells: [Int]
+    }
+
     struct AnalysisResult: Sendable {
         let snapshot: SceneSnapshot
         let overlay: HazardOverlayData
+        /// Chunks dropped for being far away; the renderer should remove them too.
+        let evicted: [UUID]
     }
 
     // MARK: State
@@ -68,6 +78,11 @@ actor MeshGeometryStore {
     private var planes: [UUID: PlaneInfo] = [:]
     private var totalVertices = 0
     private var lastGround: Float?
+    private var lastAnalysisTime: TimeInterval?
+    private var smoothedSectors = [Float](repeating: .infinity, count: 8)
+    private var sectorHits = [ObstacleHit?](repeating: nil, count: 8)
+    private var sectorStreaks = [Int](repeating: 0, count: 8)
+    private var trackedHazards: [TrackedHazard] = []
 
     init(config: PerceptionConfig) {
         self.config = config
@@ -91,19 +106,13 @@ actor MeshGeometryStore {
             aabbMax = simd_max(aabbMax, w)
         }
 
-        // Per-vertex class (a classified face wins over `none`) and per-face bucket.
+        // Per-vertex class (a classified face wins over `none`).
         var vertexClasses = [UInt8](repeating: MeshClass.none, count: n)
-        var rawMaterials = [UInt32](repeating: 0, count: faceCount)
-        var usedBuckets = [Bool](repeating: false, count: SurfaceBucket.allCases.count)
-
         chunk.indices.withUnsafeBufferPointer { idx in
             for f in 0..<faceCount {
                 let base = f * 3
                 guard base + 2 < idx.count else { break }
                 let c = chunk.faceClasses[f]
-                let bucket = SurfaceBucket(meshClass: c)
-                rawMaterials[f] = bucket.rawValue
-                usedBuckets[Int(bucket.rawValue)] = true
                 if c != MeshClass.none {
                     for k in 0..<3 {
                         let vi = Int(idx[base + k])
@@ -111,6 +120,31 @@ actor MeshGeometryStore {
                     }
                 }
             }
+        }
+
+        // Point cloud: one dot per `dotSpacing` voxel (anchor-local), drawn as a tiny
+        // octahedron so it reads as a point from any angle. Only walls and furniture (the
+        // things you can walk into) are drawn; floor, ceiling and unclassified surfaces
+        // are skipped to keep the view clean.
+        let spacing = config.dotSpacing
+        let r = config.dotRadius
+        let offsets: [SIMD3<Float>] = [[r, 0, 0], [-r, 0, 0], [0, r, 0], [0, -r, 0], [0, 0, r], [0, 0, -r]]
+        let octahedron: [UInt32] = [0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4, 2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5]
+        var seen = Set<SIMD3<Int32>>()
+        var dotPositions: [SIMD3<Float>] = []
+        var dotIndices: [UInt32] = []
+        var rawMaterials: [UInt32] = []
+        var usedBuckets = [Bool](repeating: false, count: SurfaceBucket.allCases.count)
+        for i in 0..<n {
+            let bucket = SurfaceBucket(meshClass: vertexClasses[i])
+            guard bucket == .wall || bucket == .furniture else { continue }
+            let p = chunk.localPositions[i]
+            guard seen.insert(SIMD3<Int32>(p / spacing, rounding: .down)).inserted else { continue }
+            let base = UInt32(dotPositions.count)
+            for o in offsets { dotPositions.append(p + o) }
+            for v in octahedron { dotIndices.append(base + v) }
+            for _ in 0..<(octahedron.count / 3) { rawMaterials.append(bucket.rawValue) }
+            usedBuckets[Int(bucket.rawValue)] = true
         }
 
         // Dense material indices so the renderer only allocates the materials this chunk uses.
@@ -136,8 +170,8 @@ actor MeshGeometryStore {
             anchorID: chunk.anchorID,
             sequence: chunk.sequence,
             transform: chunk.transform,
-            positions: chunk.localPositions,
-            indices: chunk.indices,
+            positions: dotPositions,
+            indices: dotIndices,
             faceMaterials: faceMaterials,
             buckets: buckets
         )
@@ -162,6 +196,15 @@ actor MeshGeometryStore {
         planes.removeAll()
         totalVertices = 0
         lastGround = nil
+        resetTracking()
+    }
+
+    private func resetTracking() {
+        lastAnalysisTime = nil
+        smoothedSectors = [Float](repeating: .infinity, count: 8)
+        sectorHits = [ObstacleHit?](repeating: nil, count: 8)
+        sectorStreaks = [Int](repeating: 0, count: 8)
+        trackedHazards.removeAll()
     }
 
     // MARK: Analysis
@@ -183,9 +226,43 @@ actor MeshGeometryStore {
         heading = simd_normalize(heading)
         let right = simd_normalize(simd_cross(heading, SIMD3(0, 1, 0)))
 
+        // ---- 0. Forget mesh far behind us so memory stays bounded --------------
+        var evicted: [UUID] = []
+        for (id, sc) in chunks
+        where Self.horizontalDistance(from: p0, toBox: sc.aabbMin, sc.aabbMax) > cfg.chunkEvictionRadius {
+            evicted.append(id)
+        }
+        for id in evicted { remove(anchorID: id) }
+
         // ---- 1. Ground plane -------------------------------------------------
         let (ground, groundSource) = estimateGround(cameraPosition: p0)
         if groundSource != .assumed { lastGround = ground }
+
+        let dt = Float(min(max(timestamp - (lastAnalysisTime ?? timestamp), 0), 0.5))
+        lastAnalysisTime = timestamp
+
+        // Without a real floor every height is relative to a guess; report nothing yet.
+        guard groundSource != .assumed else {
+            resetTracking()
+            lastAnalysisTime = timestamp
+            let snapshot = SceneSnapshot(
+                timestamp: timestamp,
+                cameraTransform: cameraTransform,
+                cameraPosition: p0,
+                heading: heading,
+                groundHeight: ground,
+                groundSource: groundSource,
+                nearestObstacle: nil,
+                nearestForwardObstacle: nil,
+                sectorDistances: smoothedSectors,
+                tripHazards: [],
+                meshAnchorCount: chunks.count,
+                vertexCount: totalVertices
+            )
+            var overlay = HazardOverlayData()
+            overlay.timestamp = timestamp
+            return AnalysisResult(snapshot: snapshot, overlay: overlay, evicted: evicted)
+        }
 
         // ---- 2. Single pass: sonar + corridor accumulation --------------------
         let chunkList = Array(chunks.values)
@@ -207,13 +284,12 @@ actor MeshGeometryStore {
 
         let sonarYMin = ground + cfg.obstacleMinHeight
         let sonarYMax = ground + cfg.obstacleMaxHeight
-        let cosHalfCone = cos(cfg.forwardConeHalfAngle)
 
-        var bestDist: Float = .infinity
-        var best: ObstacleHit?
-        var bestFwdDist: Float = .infinity
-        var bestFwd: ObstacleHit?
-        var sectors = [Float](repeating: .infinity, count: 8)
+        // Sonar histogram: 8 yaw sectors x distance bins.
+        let nBins = max(1, Int((cfg.obstacleMaxRange / cfg.obstacleBinSize).rounded(.up)))
+        var binCount = [Int](repeating: 0, count: 8 * nBins)
+        var binSum = [SIMD3<Float>](repeating: .zero, count: 8 * nBins)
+        var binClass = [UInt8](repeating: MeshClass.none, count: 8 * nBins)
 
         for (ci, sc) in chunkList.enumerated() {
             let sonarRelevant =
@@ -237,19 +313,14 @@ actor MeshGeometryStore {
                            dy >= cfg.obstacleMinHeight, dy <= cfg.obstacleMaxHeight,
                            c != MeshClass.floor, c != MeshClass.ceiling {
                             let dist = (d.x * d.x + d.z * d.z).squareRoot()
-                            if dist <= cfg.obstacleMaxRange, dist > 0.05 {
-                                if dist < bestDist {
-                                    bestDist = dist
-                                    best = ObstacleHit(point: v, horizontalDistance: dist, bucket: SurfaceBucket(meshClass: c))
-                                }
-                                if t >= dist * cosHalfCone, dist < bestFwdDist {
-                                    bestFwdDist = dist
-                                    bestFwd = ObstacleHit(point: v, horizontalDistance: dist, bucket: SurfaceBucket(meshClass: c))
-                                }
+                            if dist < cfg.obstacleMaxRange, dist > 0.05 {
                                 let angle = atan2(s, t)                                   // 0 = ahead, +pi/2 = right
                                 var k = Int(((angle + .pi / 8) / (.pi / 4)).rounded(.down))
                                 k = ((k % 8) + 8) % 8
-                                if dist < sectors[k] { sectors[k] = dist }
+                                let bin = k * nBins + min(Int(dist / cfg.obstacleBinSize), nBins - 1)
+                                binCount[bin] += 1
+                                binSum[bin] += v
+                                if c != MeshClass.none { binClass[bin] = c }
                             }
                         }
 
@@ -283,17 +354,63 @@ actor MeshGeometryStore {
             }
         }
 
+        // ---- 2b. Resolve sonar sectors + temporal smoothing ---------------------
+        for k in 0..<8 {
+            var raw: ObstacleHit?
+            for b in 0..<nBins {
+                let bin = k * nBins + b
+                guard binCount[bin] >= cfg.minObstacleVertices else { continue }
+                let centroid = binSum[bin] / Float(binCount[bin])
+                raw = ObstacleHit(
+                    point: centroid,
+                    horizontalDistance: simd_length((centroid - p0).xz),
+                    bucket: SurfaceBucket(meshClass: binClass[bin])
+                )
+                break
+            }
+            sectorStreaks[k] = raw == nil ? 0 : sectorStreaks[k] + 1
+
+            if let raw, raw.horizontalDistance <= smoothedSectors[k] {
+                // Closer: take it immediately, but a brand-new obstacle must be seen twice.
+                if smoothedSectors[k].isFinite || sectorStreaks[k] >= 2 {
+                    smoothedSectors[k] = raw.horizontalDistance
+                    sectorHits[k] = raw
+                }
+            } else if smoothedSectors[k].isFinite {
+                // Farther or gone: recede at a limited rate so one missed scan does not flicker.
+                let receded = smoothedSectors[k] + cfg.obstacleReleaseRate * dt
+                if let raw, raw.horizontalDistance <= receded {
+                    smoothedSectors[k] = raw.horizontalDistance
+                    sectorHits[k] = raw
+                } else if receded >= cfg.obstacleMaxRange {
+                    smoothedSectors[k] = .infinity
+                    sectorHits[k] = nil
+                } else {
+                    smoothedSectors[k] = receded
+                    if let hit = sectorHits[k] {
+                        sectorHits[k] = ObstacleHit(point: hit.point, horizontalDistance: receded, bucket: hit.bucket)
+                    }
+                }
+            }
+        }
+        let nearestSector = (0..<8).min { smoothedSectors[$0] < smoothedSectors[$1] }!
+        let best = sectorHits[nearestSector]
+        let forwardSector = [7, 0, 1].min { smoothedSectors[$0] < smoothedSectors[$1] }!
+        let bestFwd = sectorHits[forwardSector]
+
         // ---- 3. Classify cells ------------------------------------------------
         var kinds = [CellKind](repeating: .none, count: cells.count)
         for idx in 0..<cells.count {
             let cell = cells[idx]
-            if cell.dropCount >= cfg.minHazardVertices, cell.dropCount >= cell.bumpCount {
+            let minShare = cfg.minHazardFraction * Float(cell.count)
+            if cell.dropCount >= cfg.minHazardVertices, Float(cell.dropCount) >= minShare,
+               cell.dropCount >= cell.bumpCount {
                 kinds[idx] = .drop
-            } else if cell.bumpCount >= cfg.minHazardVertices {
+            } else if cell.bumpCount >= cfg.minHazardVertices, Float(cell.bumpCount) >= minShare {
                 kinds[idx] = .bump
             }
         }
-        if groundSource != .assumed {
+        if cfg.reportUnknownSurfaces {
             // A cell with no LiDAR returns at all, surrounded by scanned floor and within
             // close range, usually means the floor is not there (edge of a platform,
             // glass, or a very deep hole). Reported at low confidence.
@@ -314,7 +431,7 @@ actor MeshGeometryStore {
         }
 
         // ---- 4. Flood-fill cells into hazards ---------------------------------
-        var hazards: [TripHazard] = []
+        var found: [(hazard: TripHazard, cells: [Int])] = []
         var visited = [Bool](repeating: false, count: cells.count)
         for start in 0..<cells.count where kinds[start] != .none && !visited[start] {
             let kind = kinds[start]
@@ -379,7 +496,7 @@ actor MeshGeometryStore {
             hasher.combine(Int((position.z / 0.25).rounded()))
             hasher.combine(hazardKind.rawValue)
 
-            hazards.append(TripHazard(
+            found.append((TripHazard(
                 id: hasher.finalize(),
                 kind: hazardKind,
                 position: position,
@@ -388,16 +505,34 @@ actor MeshGeometryStore {
                 elevation: elevation,
                 confidence: confidence,
                 vertexCount: count
-            ))
+            ), members))
         }
-        hazards.sort { $0.distanceAhead < $1.distanceAhead }
+
+        // ---- 4b. Persistence: report a hazard only once it survives several scans --
+        var next: [TrackedHazard] = []
+        for (hazard, members) in found {
+            var tracked = TrackedHazard(hazard: hazard, streak: 1, cells: members)
+            if let m = trackedHazards.firstIndex(where: {
+                $0.hazard.kind == hazard.kind
+                    && simd_length(($0.hazard.position - hazard.position).xz) <= cfg.hazardMatchRadius
+            }) {
+                tracked.streak = trackedHazards[m].streak + 1
+                tracked.hazard = hazard.withID(trackedHazards[m].hazard.id)   // keep a stable id
+                trackedHazards.remove(at: m)
+            }
+            next.append(tracked)
+        }
+        trackedHazards = next
+        let confirmed = next.filter { $0.streak >= cfg.hazardConfirmFrames }
+        let confirmedCells = Set(confirmed.flatMap(\.cells))
+        let hazards = confirmed.map(\.hazard).sorted { $0.distanceAhead < $1.distanceAhead }
 
         // ---- 5. Red overlay triangles ----------------------------------------
         var overlay = HazardOverlayData()
         overlay.timestamp = timestamp
-        if !candidates.isEmpty {
+        if !candidates.isEmpty, !confirmedCells.isEmpty {
             var masks: [Int: [Bool]] = [:]
-            for cand in candidates where kinds[cand.cell] == .drop || kinds[cand.cell] == .bump {
+            for cand in candidates where confirmedCells.contains(cand.cell) {
                 if masks[cand.chunkIndex] == nil {
                     masks[cand.chunkIndex] = [Bool](repeating: false, count: chunkList[cand.chunkIndex].world.count)
                 }
@@ -440,12 +575,12 @@ actor MeshGeometryStore {
             groundSource: groundSource,
             nearestObstacle: best,
             nearestForwardObstacle: bestFwd,
-            sectorDistances: sectors,
+            sectorDistances: smoothedSectors,
             tripHazards: hazards,
             meshAnchorCount: chunks.count,
             vertexCount: totalVertices
         )
-        return AnalysisResult(snapshot: snapshot, overlay: overlay)
+        return AnalysisResult(snapshot: snapshot, overlay: overlay, evicted: evicted)
     }
 
     // MARK: Ground estimation

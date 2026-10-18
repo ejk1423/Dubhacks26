@@ -14,7 +14,7 @@ import simd
 // MARK: - Configuration
 
 /// Tunable thresholds for the perception pipeline. Distances are metres, times are seconds.
-struct PerceptionConfig: Sendable {
+nonisolated struct PerceptionConfig: Sendable {
 
     // Walking-path corridor analysed for trip hazards, expressed relative to the
     // camera position along the horizontal heading (`t` = ahead, `s` = right).
@@ -24,10 +24,14 @@ struct PerceptionConfig: Sendable {
     var cellSize: Float = 0.2
 
     // Elevation thresholds relative to the locally estimated ground plane.
-    var dropThreshold: Float = 0.08        // pothole / step down (negative elevation)
-    var bumpThreshold: Float = 0.05        // curb / rock / cable (positive elevation)
+    var dropThreshold: Float = 0.12        // pothole / step down (negative elevation)
+    var bumpThreshold: Float = 0.08        // curb / rock / cable (positive elevation)
     var maxTripHeight: Float = 0.35        // taller than this is an obstacle (sonar), not a trip hazard
-    var minHazardVertices: Int = 4         // per-cell noise rejection
+    var minHazardVertices: Int = 8         // per-cell noise rejection
+    var minHazardFraction: Float = 0.4     // drop/bump vertices as a share of the cell's floor-ish vertices
+    var hazardConfirmFrames: Int = 3       // consecutive analyses a hazard must persist before it is reported
+    var hazardMatchRadius: Float = 0.3     // max centroid movement for a hazard to count as the same one
+    var reportUnknownSurfaces = false      // LiDAR gaps are common at range; too noisy to report
     var unknownSurfaceMaxDistance: Float = 2.0
 
     // Ground estimation.
@@ -38,15 +42,22 @@ struct PerceptionConfig: Sendable {
     var assumedCameraHeight: Float = 1.3   // fallback when no floor has been seen yet
 
     // Obstacle sonar ("parking sensor").
-    var obstacleMinHeight: Float = 0.25    // ignore floor clutter below shin height
+    var obstacleMinHeight: Float = 0.30    // ignore floor clutter below shin height
     var obstacleMaxHeight: Float = 2.0     // ignore ceilings / lamps above head height
-    var obstacleMaxRange: Float = 4.0
+    var obstacleMaxRange: Float = 3.0      // reliable LiDAR range; beyond this the sonar reports clear
+    var obstacleBinSize: Float = 0.1
+    var minObstacleVertices: Int = 8       // vertices in one sector/distance bin before it counts as an obstacle
+    var obstacleReleaseRate: Float = 0.5   // m/s a sector reading may recede (approaching is instant)
+    var chunkEvictionRadius: Float = 15.0  // stored mesh farther than this is dropped
     var forwardConeHalfAngle: Float = .pi / 4
 
     // Scheduling and rendering.
     var analysisInterval: TimeInterval = 0.1   // 10 Hz hazard + sonar analysis
-    var maxAnchorUpdatesPerFrame: Int = 3      // mesh anchors converted per ARFrame (60 Hz)
-    var renderRadius: Float = 8.0              // wireframe chunks farther than this are hidden
+    var maxAnchorUpdatesPerFrame: Int = 1      // mesh anchors converted per ARFrame (60 Hz)
+    var maxUpsertsInFlight: Int = 2            // chunks queued on the store before ingestion waits
+    var renderRadius: Float = 3.0              // wireframe chunks farther than this are hidden
+    var dotSpacing: Float = 0.2                // one rendered dot per voxel of this size
+    var dotRadius: Float = 0.006               // half-size of each dot
     var hazardOverlayLift: Float = 0.015       // lift the red overlay above the mesh to avoid z-fighting
     var maxOverlayTriangles: Int = 20_000
 }
@@ -54,7 +65,7 @@ struct PerceptionConfig: Sendable {
 // MARK: - Surface classification
 
 /// Raw `ARMeshClassification` values, kept as `UInt8` so chunks stay cheap and `Sendable`.
-enum MeshClass {
+nonisolated enum MeshClass {
     static let none: UInt8 = 0
     static let wall: UInt8 = 1
     static let floor: UInt8 = 2
@@ -66,7 +77,7 @@ enum MeshClass {
 }
 
 /// Rendering palette bucket. The raw value is the natural material ordering.
-enum SurfaceBucket: UInt32, CaseIterable, Sendable {
+nonisolated enum SurfaceBucket: UInt32, CaseIterable, Sendable {
     case floor = 0      // walkable – neon green
     case wall           // walls, doors, windows – cyan
     case ceiling        // dim indigo
@@ -87,7 +98,7 @@ enum SurfaceBucket: UInt32, CaseIterable, Sendable {
 // MARK: - Geometry transfer objects (main actor -> MeshGeometryStore)
 
 /// One ARMeshAnchor geometry copied out of its Metal buffers.
-struct MeshChunk: Sendable {
+nonisolated struct MeshChunk: Sendable {
     let anchorID: UUID
     /// Monotonic per-manager counter so stale async results can be discarded.
     let sequence: UInt64
@@ -103,7 +114,7 @@ struct MeshChunk: Sendable {
 }
 
 /// Horizontal ARPlaneAnchor summary used as the "established" ground plane.
-struct PlaneInfo: Sendable {
+nonisolated struct PlaneInfo: Sendable {
     let anchorID: UUID
     let transform: simd_float4x4
     let center: SIMD3<Float>
@@ -118,7 +129,7 @@ struct PlaneInfo: Sendable {
 // MARK: - Render transfer objects (MeshGeometryStore -> WireframeRenderer)
 
 /// Everything the renderer needs to (re)build one wireframe chunk.
-struct WireframeMeshData: Sendable {
+nonisolated struct WireframeMeshData: Sendable {
     let anchorID: UUID
     let sequence: UInt64
     let transform: simd_float4x4
@@ -131,7 +142,7 @@ struct WireframeMeshData: Sendable {
 }
 
 /// World-space triangles of every face currently flagged as a trip hazard.
-struct HazardOverlayData: Sendable {
+nonisolated struct HazardOverlayData: Sendable {
     var positions: [SIMD3<Float>] = []
     var indices: [UInt32] = []
     var timestamp: TimeInterval = 0
@@ -141,20 +152,20 @@ struct HazardOverlayData: Sendable {
 // MARK: - Analysis results (MeshGeometryStore -> HUD / audio)
 
 /// Nearest solid surface point, used by the wall-sonar audio source.
-struct ObstacleHit: Sendable, Equatable {
+nonisolated struct ObstacleHit: Sendable, Equatable {
     let point: SIMD3<Float>
     /// Horizontal (XZ) distance from the camera, which is what matters for a walking body.
     let horizontalDistance: Float
     let bucket: SurfaceBucket
 }
 
-enum TripHazardKind: Int, Sendable {
+nonisolated enum TripHazardKind: Int, Sendable {
     case drop            // pothole, step down, open stairwell
     case bump            // curb, rock, cable, threshold
     case unknownSurface  // no LiDAR return where floor is expected (low confidence)
 }
 
-struct TripHazard: Sendable, Identifiable, Equatable {
+nonisolated struct TripHazard: Sendable, Identifiable, Equatable {
     /// Stable across frames while the hazard stays roughly in place (rounded world XZ + kind).
     let id: Int
     let kind: TripHazardKind
@@ -166,16 +177,22 @@ struct TripHazard: Sendable, Identifiable, Equatable {
     let elevation: Float
     let confidence: Float
     let vertexCount: Int
+
+    func withID(_ id: Int) -> TripHazard {
+        TripHazard(id: id, kind: kind, position: position, distanceAhead: distanceAhead,
+                   lateralOffset: lateralOffset, elevation: elevation,
+                   confidence: confidence, vertexCount: vertexCount)
+    }
 }
 
-enum GroundSource: Sendable, Equatable {
+nonisolated enum GroundSource: Sendable, Equatable {
     case planeAnchor
     case meshMedian
     case assumed
 }
 
 /// Snapshot of the scene published every `PerceptionConfig.analysisInterval`.
-struct SceneSnapshot: Sendable {
+nonisolated struct SceneSnapshot: Sendable {
     let timestamp: TimeInterval
     let cameraTransform: simd_float4x4
     let cameraPosition: SIMD3<Float>
@@ -195,7 +212,7 @@ struct SceneSnapshot: Sendable {
 
 // MARK: - Session state
 
-enum PerceptionStatus: Sendable, Equatable {
+nonisolated enum PerceptionStatus: Sendable, Equatable {
     case idle
     case starting
     case running
@@ -205,7 +222,7 @@ enum PerceptionStatus: Sendable, Equatable {
     case unsupported(String)
 }
 
-struct DeviceCapabilities: Sendable, Equatable {
+nonisolated struct DeviceCapabilities: Sendable, Equatable {
     var worldTracking = false
     var meshReconstruction = false
     var meshClassification = false
@@ -215,7 +232,7 @@ struct DeviceCapabilities: Sendable, Equatable {
     var hasLiDAR: Bool { meshReconstruction }
 }
 
-enum CameraFeedMode: Sendable, Equatable {
+nonisolated enum CameraFeedMode: Sendable, Equatable {
     /// Pure black background: the Tesla FSD look.
     case hidden
     /// Camera feed darkened by `ev` stops (negative values dim). -2.5 reads as a night-vision feed.
@@ -225,7 +242,7 @@ enum CameraFeedMode: Sendable, Equatable {
 
 // MARK: - simd helpers
 
-extension simd_float4x4 {
+nonisolated extension simd_float4x4 {
     var translation: SIMD3<Float> { SIMD3(columns.3.x, columns.3.y, columns.3.z) }
 
     func transformPoint(_ p: SIMD3<Float>) -> SIMD3<Float> {
@@ -234,7 +251,7 @@ extension simd_float4x4 {
     }
 }
 
-extension SIMD3 where Scalar == Float {
+nonisolated extension SIMD3 where Scalar == Float {
     /// Projection onto the horizontal plane.
     var xz: SIMD3<Float> { SIMD3(x, 0, z) }
 }
