@@ -634,6 +634,12 @@ nonisolated final class VisionObserver: @unchecked Sendable {
         ("trash", "Trash", .object), ("litter", "Litter", .object), ("cone", "Cone", .object), ("chair", "Chair", .object),
         ("stool", "Stool", .object), ("dog", "Dog", .object), ("cat", "Cat", .object), ("package", "Package", .object),
         ("umbrella", "Umbrella", .object), ("helmet", "Helmet", .object), ("book", "Book", .object),
+        ("beanbag", "Bean bag", .object), ("bean bag", "Bean bag", .object), ("cushion", "Cushion", .object),
+        ("pillow", "Pillow", .object), ("blanket", "Blanket", .object), ("laundry", "Laundry", .object),
+        ("clothes", "Clothes", .object), ("clothing", "Clothes", .object), ("towel", "Towel", .object),
+        ("sofa", "Couch", .object), ("couch", "Couch", .object), ("ottoman", "Ottoman", .object),
+        ("laptop", "Laptop", .object), ("speaker", "Speaker", .object), ("fan", "Fan", .object),
+        ("luggage", "Luggage", .object), ("crate", "Crate", .object), ("pet bed", "Pet bed", .object),
     ]
 
     private static func groundGuess(in observations: [VNClassificationObservation]) -> (kind: GroundKind, name: String, confidence: Float)? {

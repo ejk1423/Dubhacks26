@@ -157,7 +157,7 @@ final class Narrator {
                 && ($0.distanceAhead <= hazardMinDistance || secondsTo($0.distanceAhead) <= hazardLeadTime)
         }) {
             // Once per hazard (ids are stable while it stays put), and never two in quick succession.
-            if let line = Self.hazardLine(hazard, vision: fresh),
+            if let line = Self.hazardLine(hazard, vision: fresh, snapshot: snapshot),
                lastSpoken["hazard"].map({ now - $0 >= 3 }) ?? true,
                say(line, key: "hazard:\(hazard.id)", every: 12, interrupt: true, alert: true, now: now) {
                 lastSpoken["hazard"] = now
@@ -555,7 +555,7 @@ final class Narrator {
 
     /// Edge hazards (the floor simply ends) are published as `.drop` with no vertices below.
     private static func name(_ hazard: TripHazard) -> String {
-        if hazard.isCompact, hazard.kind == .bump { return "Something on the floor" }
+        if hazard.looksLikeObject { return "Something on the floor" }
         switch hazard.kind {
         case .drop: return hazard.vertexCount == 0 ? "Drop-off" : "Step down"
         case .bump: return "Step up"
@@ -567,7 +567,7 @@ final class Narrator {
     /// sees on the floor there. Geometry and vision have to agree before a step is called
     /// far out; a compact bump is an object, and anything the camera says is flat (a rug, a
     /// cable, a threshold strip) is left alone. Returns nil to stay quiet.
-    static func hazardLine(_ hazard: TripHazard, vision: VisionReport?) -> String? {
+    static func hazardLine(_ hazard: TripHazard, vision: VisionReport?, snapshot: SceneSnapshot? = nil) -> String? {
         if hazard.kind == .drop, hazard.vertexCount == 0 { return "Drop-off" }
         let ground = vision?.groundKind
         let label = vision?.groundLabel
@@ -576,7 +576,14 @@ final class Narrator {
         let strongGeometry = abs(hazard.elevation) >= 0.14 && hazard.lateralSpan >= 0.6
         let close = hazard.distanceAhead <= 0.5
 
-        if hazard.kind == .bump, ground == .object || (hazard.isCompact && ground != .step) {
+        // A step has nothing above it; if the body-height sonar sees an obstacle at the
+        // same distance, this raised patch is the foot of something you would walk into.
+        let sonarSeesIt = snapshot?.nearestForwardObstacle.map {
+            abs($0.horizontalDistance - hazard.distanceAhead) <= 0.35
+        } ?? false
+        let objectLike = hazard.looksLikeObject || (hazard.kind == .bump && sonarSeesIt)
+
+        if hazard.kind == .bump, ground == .object || (objectLike && ground != .step) {
             if let label, ground == .object { return "\(label) on the floor ahead" }
             return strongGeometry || close ? "Something on the floor ahead" : nil
         }

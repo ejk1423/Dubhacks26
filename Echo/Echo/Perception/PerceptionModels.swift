@@ -273,6 +273,10 @@ nonisolated struct TripHazard: Sendable, Identifiable, Equatable {
     /// Small in both directions: an object lying on the floor rather than a step.
     var isCompact: Bool { lateralSpan > 0 && lateralSpan < 0.6 }
 
+    /// A raised patch that is not a step: compact, or taller than anything one steps
+    /// onto without thinking (a bean bag, a box, a bag).
+    var looksLikeObject: Bool { kind == .bump && (isCompact || elevation >= 0.25) }
+
     func withID(_ id: Int) -> TripHazard {
         var copy = TripHazard(id: id, kind: kind, position: position, distanceAhead: distanceAhead,
                               lateralOffset: lateralOffset, elevation: elevation,

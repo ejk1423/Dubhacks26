@@ -43,7 +43,7 @@ nonisolated struct ProximityState: Equatable, Sendable {
         if let hazard {
             let kind: Kind
             if hazard.kind == .drop, hazard.vertexCount == 0 { kind = .edge }
-            else if hazard.kind == .bump, hazard.isCompact { kind = .floorObject }
+            else if hazard.looksLikeObject { kind = .floorObject }
             else { kind = .hazard(hazard.kind) }
             return ProximityState(kind: kind, distance: hazard.distanceAhead, closeness: closeness)
         }
