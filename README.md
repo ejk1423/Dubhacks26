@@ -73,7 +73,17 @@ the camera position each frame with no CPU work.
 
 ```
 Echo/Echo
-├── ContentView.swift          HUD: minimap, proximity gauge, controls, settings
+├── ContentView.swift          HUD composition (Simple / Detail modes)
+├── Views/
+│   ├── HUDStyle.swift             spacing scale, Liquid Glass surfaces, button styles, haptics
+│   ├── ProximityGauge.swift       the focal point: ring + distance + state word
+│   ├── ProximityState.swift       one value for the way ahead; VoiceOver announcer
+│   ├── HUDBar.swift               Describe, control group, status line, minimap button
+│   ├── MinimapView.swift          top-down map, full-screen map sheet, legend
+│   ├── OnboardingView.swift       first-run tutorial
+│   ├── SettingsView.swift         sound, voice, display, map, help, about
+│   ├── HUDPreferences.swift       persisted HUD settings
+│   └── ARWireframeView.swift
 ├── Audio/
 │   ├── SpatialAudioEngine.swift   collision beeps (rate, loudness, pitch, stereo nudge)
 │   └── Narrator.swift             speech: hazards, people, objects, signs, describe
@@ -83,9 +93,14 @@ Echo/Echo
 │   ├── VisionObserver.swift       Vision requests fused with the depth map
 │   ├── PerceptionModels.swift     Sendable models + PerceptionConfig (all tunables)
 │   └── SurfaceRenderer.swift      RealityKit entities + CustomMaterial
-├── Shaders/EchoSurface.metal  surface fade / grid / sweep
-└── Views/ARWireframeView.swift
+└── Shaders/EchoSurface.metal  surface fade / grid / sweep
 ```
+
+The HUD follows Apple's Human Interface Guidelines: system components over the
+camera pick up Liquid Glass on their own (one prominent button, standard glass for
+the rest), system text styles with Dynamic Type, semantic colour only on the
+proximity state (always paired with a word and a symbol), and solid surfaces under
+Reduce Transparency / Increase Contrast.
 
 Tunables live in `PerceptionConfig` (ranges, thresholds, rates) and at the top of
 `SpatialAudioEngine` and `Narrator` (lead times, repeat intervals).
