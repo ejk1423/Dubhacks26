@@ -52,7 +52,7 @@ final class ARLiDARManager: NSObject {
 
     /// Every ARFrame (60 Hz). The vision tracker samples `capturedImage` / `sceneDepth` here.
     @ObservationIgnored var onFrame: ((ARFrame) -> Void)?
-    /// Every `config.analysisInterval` (10 Hz). The spatial audio engine places its sources here.
+    /// Every `config.analysisInterval` (20 Hz). The spatial audio engine places its sources here.
     @ObservationIgnored var onSnapshot: ((SceneSnapshot) -> Void)?
 
     // MARK: Scheduling
