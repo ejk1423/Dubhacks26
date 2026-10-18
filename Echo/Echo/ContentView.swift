@@ -42,8 +42,8 @@ struct ContentView: View {
 
     private var zone: Zone {
         guard let d = forward?.horizontalDistance, d <= audio.alertRange else { return .clear }
-        if d <= 0.5 { return .imminent }
-        if d <= 0.8 { return .near }
+        if d <= 0.3 { return .imminent }
+        if d <= 0.45 { return .near }
         return .far
     }
 
@@ -99,11 +99,26 @@ struct ContentView: View {
     // MARK: Top status bar
 
     private var statusBar: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                chip("sensor.fill", manager.capabilities.hasLiDAR ? "LiDAR" : "No LiDAR", ok: manager.capabilities.hasLiDAR)
-                chip("headphones", audio.headphonesConnected ? "Headphones" : "No headphones", ok: audio.headphonesConnected)
-                chip("square.stack.3d.down.right.fill", floorFound ? "Floor" : "Finding floor", ok: floorFound)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 12) {
+                RadarView(
+                    sectorDistances: snapshot?.sectorDistances ?? [],
+                    forwardDistance: forward?.horizontalDistance,
+                    forwardBearing: forwardBearing,
+                    maxRange: manager.config.obstacleMaxRange,
+                    alertRange: audio.alertRange,
+                    zoneColor: zoneColor
+                )
+                .frame(width: 150, height: 84)
+                .padding(8)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    chip("sensor.fill", manager.capabilities.hasLiDAR ? "LiDAR" : "No LiDAR", ok: manager.capabilities.hasLiDAR)
+                    chip("headphones", audio.headphonesConnected ? "Headphones" : "No headphones", ok: audio.headphonesConnected)
+                    chip("square.stack.3d.down.right.fill", floorFound ? "Floor" : "Finding floor", ok: floorFound)
+                }
+                Spacer(minLength: 0)
             }
             if let message = statusMessage {
                 Text(message)
@@ -116,6 +131,7 @@ struct ContentView: View {
         }
         .padding(.top, 8)
         .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func chip(_ symbol: String, _ text: String, ok: Bool) -> some View {
@@ -145,18 +161,7 @@ struct ContentView: View {
 
     private var panel: some View {
         VStack(spacing: 14) {
-            ZStack(alignment: .bottom) {
-                RadarView(
-                    sectorDistances: snapshot?.sectorDistances ?? [],
-                    forwardDistance: forward?.horizontalDistance,
-                    forwardBearing: forwardBearing,
-                    maxRange: manager.config.obstacleMaxRange,
-                    alertRange: audio.alertRange,
-                    zoneColor: zoneColor
-                )
-                .frame(height: 150)
-
-                VStack(spacing: 0) {
+            VStack(spacing: 0) {
                     Text(headline)
                         .font(.system(size: 44, weight: .heavy, design: .rounded))
                         .foregroundStyle(hazard == nil ? zoneColor : .red)
@@ -167,8 +172,6 @@ struct ContentView: View {
                             .foregroundStyle(.white.opacity(0.9))
                             .contentTransition(.numericText())
                     }
-                }
-                .padding(.bottom, 4)
             }
             .accessibilityElement(children: .combine)
 

@@ -59,6 +59,7 @@ final class WireframeRenderer {
 
     private var meshEntities: [UUID: ModelEntity] = [:]
     private var sequences: [UUID: UInt64] = [:]
+    private var centers: [UUID: SIMD3<Float>] = [:]
     private var bucketMaterials: [SurfaceBucket: UnlitMaterial] = [:]
 
     private let hazardFill: ModelEntity
@@ -102,6 +103,7 @@ final class WireframeRenderer {
     func apply(_ data: WireframeMeshData) {
         if let last = sequences[data.anchorID], last > data.sequence { return }
         sequences[data.anchorID] = data.sequence
+        centers[data.anchorID] = data.center
 
         guard !data.positions.isEmpty, data.indices.count >= 3, !data.buckets.isEmpty else {
             remove(anchorID: data.anchorID)
@@ -141,20 +143,23 @@ final class WireframeRenderer {
             entity.removeFromParent()
         }
         sequences[anchorID] = nil
+        centers[anchorID] = nil
     }
 
     func removeAll() {
         for entity in meshEntities.values { entity.removeFromParent() }
         meshEntities.removeAll()
         sequences.removeAll()
+        centers.removeAll()
         hazardFill.isEnabled = false
     }
 
     /// Hides chunks far from the user so a long walk does not accumulate draw calls.
     func cull(around cameraPosition: SIMD3<Float>, radius: Float) {
-        let limit = radius + 2.0   // chunk origin is near its centre; chunks are ~1-2 m wide
-        for entity in meshEntities.values {
-            let shouldShow = simd_distance(entity.transform.translation, cameraPosition) <= limit
+        let limit = radius + 2.0   // chunks are ~1-2 m wide
+        for (id, entity) in meshEntities {
+            let center = centers[id] ?? entity.transform.translation
+            let shouldShow = simd_distance(center, cameraPosition) <= limit
             if entity.isEnabled != shouldShow { entity.isEnabled = shouldShow }
         }
     }

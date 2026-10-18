@@ -17,6 +17,12 @@
 //      clusters them into `TripHazard`s, reports only those that persist over several
 //      analyses, and emits the red overlay triangles.
 //
+//  The sonar fuses two sources: the accumulated mesh (full 360 degrees, but smoothed
+//  and a second or so behind reality) and the live LiDAR depth map (camera field of
+//  view only, but dense and instantaneous). Inside the depth map's cone the corridor
+//  trusts the depth map, so stale mesh never triggers a collision warning and a person
+//  stepping in front is seen on the next analysis.
+//
 //  Only `Sendable` value types cross into or out of this actor.
 //
 
@@ -57,6 +63,67 @@ actor MeshGeometryStore {
 
     private enum CellKind: UInt8 {
         case none = 0, drop, bump, unknown
+    }
+
+    /// Sonar histograms: fine yaw sectors x distance bins, plus the forward corridor
+    /// (one histogram for the mesh, one for the live depth map).
+    private struct SonarBins {
+        let nSectors: Int
+        let nBins: Int
+        let sectorWidth: Float
+        let binSize: Float
+        let maxRange: Float
+        let forwardHalfWidth: Float
+        var count: [Int]
+        var sum: [SIMD3<Float>]
+        var cls: [UInt8]
+        var fwdCount: [Int]
+        var fwdSum: [SIMD3<Float>]
+        var fwdClass: [UInt8]
+        var depthFwdCount: [Int]
+        var depthFwdSum: [SIMD3<Float>]
+
+        init(nSectors: Int, nBins: Int, config cfg: PerceptionConfig) {
+            self.nSectors = nSectors
+            self.nBins = nBins
+            sectorWidth = 2 * .pi / Float(nSectors)
+            binSize = cfg.obstacleBinSize
+            maxRange = cfg.obstacleMaxRange
+            forwardHalfWidth = cfg.forwardHalfWidth
+            count = [Int](repeating: 0, count: nSectors * nBins)
+            sum = [SIMD3<Float>](repeating: .zero, count: nSectors * nBins)
+            cls = [UInt8](repeating: MeshClass.none, count: nSectors * nBins)
+            fwdCount = [Int](repeating: 0, count: nBins)
+            fwdSum = [SIMD3<Float>](repeating: .zero, count: nBins)
+            fwdClass = [UInt8](repeating: MeshClass.none, count: nBins)
+            depthFwdCount = [Int](repeating: 0, count: nBins)
+            depthFwdSum = [SIMD3<Float>](repeating: .zero, count: nBins)
+        }
+
+        /// Drops one solid point into the sector histogram and, if it is in the walking
+        /// corridor, into the forward histogram (`fromDepth` selects which one).
+        mutating func accumulate(_ v: SIMD3<Float>, _ c: UInt8, t: Float, s: Float, fromDepth: Bool) {
+            let dist = (t * t + s * s).squareRoot()
+            guard dist < maxRange, dist > 0.05 else { return }
+            let angle = atan2(s, t)                                   // 0 = ahead, +pi/2 = right
+            var k = Int(((angle + sectorWidth / 2) / sectorWidth).rounded(.down))
+            k = ((k % nSectors) + nSectors) % nSectors
+            let b = min(Int(dist / binSize), nBins - 1)
+            let bin = k * nBins + b
+            count[bin] += 1
+            sum[bin] += v
+            if c != MeshClass.none { cls[bin] = c }
+            guard t > 0.05, abs(s) <= forwardHalfWidth else { return }
+            let fb = min(Int(t / binSize), nBins - 1)
+            if fromDepth {
+                depthFwdCount[fb] += 1
+                depthFwdSum[fb] += v
+            } else {
+                fwdCount[fb] += 1
+                fwdSum[fb] += v
+                if c != MeshClass.none { fwdClass[fb] = c }
+            }
+        }
     }
 
     private struct TrackedHazard {
@@ -186,6 +253,7 @@ actor MeshGeometryStore {
             anchorID: chunk.anchorID,
             sequence: chunk.sequence,
             transform: matrix_identity_float4x4,   // dots are already in world space
+            center: (aabbMin + aabbMax) / 2,
             positions: dotPositions,
             indices: dotIndices,
             faceMaterials: faceMaterials,
@@ -230,7 +298,9 @@ actor MeshGeometryStore {
     // MARK: Analysis
 
     /// Runs the ground estimate, obstacle sonar and trip-hazard scan for the given camera pose.
-    func analyze(cameraTransform: simd_float4x4, timestamp: TimeInterval) -> AnalysisResult {
+    /// `depthPoints` are world-space samples of this frame's LiDAR depth map (may be empty).
+    func analyze(cameraTransform: simd_float4x4, timestamp: TimeInterval,
+                 depthPoints: [SIMD3<Float>]) -> AnalysisResult {
         let cfg = config
         let p0 = cameraTransform.translation
 
@@ -290,16 +360,19 @@ actor MeshGeometryStore {
         let sonarYMin = ground + cfg.obstacleMinHeight
         let sonarYMax = ground + cfg.obstacleMaxHeight
 
-        // Sonar histograms: fine yaw sectors x distance bins, plus the forward corridor.
         let nSectors = Self.sectorCount
-        let sectorWidth = 2 * Float.pi / Float(nSectors)
         let nBins = max(1, Int((cfg.obstacleMaxRange / cfg.obstacleBinSize).rounded(.up)))
-        var binCount = [Int](repeating: 0, count: nSectors * nBins)
-        var binSum = [SIMD3<Float>](repeating: .zero, count: nSectors * nBins)
-        var binClass = [UInt8](repeating: MeshClass.none, count: nSectors * nBins)
-        var fwdCount = [Int](repeating: 0, count: nBins)
-        var fwdSum = [SIMD3<Float>](repeating: .zero, count: nBins)
-        var fwdClass = [UInt8](repeating: MeshClass.none, count: nBins)
+        var bins = SonarBins(nSectors: nSectors, nBins: nBins, config: cfg)
+
+        // Live depth map: no classes, but every point is a real surface seen this frame.
+        for v in depthPoints {
+            let dy = v.y - ground
+            guard dy >= cfg.obstacleMinHeight, dy <= cfg.obstacleMaxHeight else { continue }
+            let d = v - p0
+            bins.accumulate(v, MeshClass.none,
+                            t: d.x * heading.x + d.z * heading.z,
+                            s: d.x * right.x + d.z * right.z, fromDepth: true)
+        }
 
         for (ci, sc) in chunkList.enumerated() {
             let sonarRelevant =
@@ -322,23 +395,7 @@ actor MeshGeometryStore {
                         if sonarRelevant,
                            dy >= cfg.obstacleMinHeight, dy <= cfg.obstacleMaxHeight,
                            c != MeshClass.floor, c != MeshClass.ceiling {
-                            let dist = (d.x * d.x + d.z * d.z).squareRoot()
-                            if dist < cfg.obstacleMaxRange, dist > 0.05 {
-                                let angle = atan2(s, t)                                   // 0 = ahead, +pi/2 = right
-                                var k = Int(((angle + sectorWidth / 2) / sectorWidth).rounded(.down))
-                                k = ((k % nSectors) + nSectors) % nSectors
-                                let b = min(Int(dist / cfg.obstacleBinSize), nBins - 1)
-                                let bin = k * nBins + b
-                                binCount[bin] += 1
-                                binSum[bin] += v
-                                if c != MeshClass.none { binClass[bin] = c }
-                                if t > 0.05, abs(s) <= cfg.forwardHalfWidth {
-                                    let fb = min(Int(t / cfg.obstacleBinSize), nBins - 1)
-                                    fwdCount[fb] += 1
-                                    fwdSum[fb] += v
-                                    if c != MeshClass.none { fwdClass[fb] = c }
-                                }
-                            }
+                            bins.accumulate(v, c, t: t, s: s, fromDepth: false)
                         }
 
                         // -- Trip-hazard corridor: floor-ish surfaces only.
@@ -386,11 +443,21 @@ actor MeshGeometryStore {
         }
         for k in 0..<nSectors {
             let range = (k * nBins)..<((k + 1) * nBins)
-            smooth(raw: firstSolidBin(binCount[range], binSum[range], binClass[range]),
+            smooth(raw: firstSolidBin(bins.count[range], bins.sum[range], bins.cls[range]),
                    distance: &smoothedSectors[k], hit: &sectorHits[k], streak: &sectorStreaks[k], dt: dt)
         }
-        smooth(raw: firstSolidBin(fwdCount[...], fwdSum[...], fwdClass[...]),
-               distance: &smoothedForward, hit: &forwardHit, streak: &forwardStreak, dt: dt)
+        // Corridor: the depth map is the authority inside its cone; the mesh fills in the
+        // corridor's edges that the camera cannot see.
+        let meshForward = firstSolidBin(bins.fwdCount[...], bins.fwdSum[...], bins.fwdClass[...])
+        var rawForward = depthPoints.isEmpty
+            ? meshForward
+            : firstSolidBin(bins.depthFwdCount[...], bins.depthFwdSum[...], [UInt8](repeating: MeshClass.none, count: nBins)[...])
+        if let m = meshForward, m.horizontalDistance < (rawForward?.horizontalDistance ?? .infinity) {
+            let d = m.point - p0
+            let bearing = atan2(d.x * right.x + d.z * right.z, d.x * heading.x + d.z * heading.z)
+            if depthPoints.isEmpty || abs(bearing) > cfg.depthFOVHalfAngle { rawForward = m }
+        }
+        smooth(raw: rawForward, distance: &smoothedForward, hit: &forwardHit, streak: &forwardStreak, dt: dt)
 
         let nearestSector = (0..<nSectors).min { smoothedSectors[$0] < smoothedSectors[$1] }!
         let best = sectorHits[nearestSector]

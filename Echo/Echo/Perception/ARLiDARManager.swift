@@ -143,8 +143,10 @@ final class ARLiDARManager: NSObject {
             configuration.sceneReconstruction = .mesh
         }
 
-        // No `.sceneDepth` frame semantics until something consumes the depth map: it costs
-        // GPU time and heat, and thermal pressure interrupts the session.
+        // Raw (not smoothed) depth: the sonar wants this frame's surfaces, not a temporal blend.
+        if capabilities.sceneDepth {
+            configuration.frameSemantics.insert(.sceneDepth)
+        }
         return configuration
     }
 
@@ -242,8 +244,11 @@ final class ARLiDARManager: NSObject {
         lastAnalysisTime = frame.timestamp
         let transform = frame.camera.transform
         let timestamp = frame.timestamp
+        let depthPoints = Self.depthPoints(from: frame, step: config.depthSampleStep,
+                                           maxDepth: config.obstacleMaxRange + 0.5)
         Task {
-            let result = await store.analyze(cameraTransform: transform, timestamp: timestamp)
+            let result = await store.analyze(cameraTransform: transform, timestamp: timestamp,
+                                             depthPoints: depthPoints)
             snapshot = result.snapshot
             meshAnchorCount = result.snapshot.meshAnchorCount
             for id in result.evicted { renderer.remove(anchorID: id) }
@@ -310,6 +315,53 @@ final class ARLiDARManager: NSObject {
             faceClasses: classes,
             timestamp: timestamp
         )
+    }
+
+    /// World-space points from the LiDAR depth map: every `step`-th pixel with at least
+    /// medium confidence, unprojected with the camera intrinsics. ARKit builds this map by
+    /// fusing LiDAR returns with the colour image, so it is dense and current, and it sees
+    /// thin or moving things (poles, chair legs, people) that the mesh smooths away or lags on.
+    private static func depthPoints(from frame: ARFrame, step: Int, maxDepth: Float) -> [SIMD3<Float>] {
+        guard let depth = frame.sceneDepth, let confidence = depth.confidenceMap else { return [] }
+        let map = depth.depthMap
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        CVPixelBufferLockBaseAddress(confidence, .readOnly)
+        defer {
+            CVPixelBufferUnlockBaseAddress(map, .readOnly)
+            CVPixelBufferUnlockBaseAddress(confidence, .readOnly)
+        }
+        guard let depthBase = CVPixelBufferGetBaseAddress(map),
+              let confidenceBase = CVPixelBufferGetBaseAddress(confidence) else { return [] }
+        let width = CVPixelBufferGetWidth(map)
+        let height = CVPixelBufferGetHeight(map)
+        let depthStride = CVPixelBufferGetBytesPerRow(map) / MemoryLayout<Float32>.size
+        let confidenceStride = CVPixelBufferGetBytesPerRow(confidence)
+        let depths = depthBase.assumingMemoryBound(to: Float32.self)
+        let confidences = confidenceBase.assumingMemoryBound(to: UInt8.self)
+        let minimumConfidence = UInt8(ARConfidenceLevel.medium.rawValue)
+
+        // Intrinsics are for the full colour image; scale them to the depth map.
+        let intrinsics = frame.camera.intrinsics
+        let image = frame.camera.imageResolution
+        let sx = Float(width) / Float(image.width)
+        let sy = Float(height) / Float(image.height)
+        let fx = intrinsics[0][0] * sx, fy = intrinsics[1][1] * sy
+        let cx = intrinsics[2][0] * sx, cy = intrinsics[2][1] * sy
+        let toWorld = frame.camera.transform
+
+        var points: [SIMD3<Float>] = []
+        points.reserveCapacity((width / step) * (height / step))
+        for v in stride(from: 0, to: height, by: step) {
+            for u in stride(from: 0, to: width, by: step) {
+                guard confidences[v * confidenceStride + u] >= minimumConfidence else { continue }
+                let z = depths[v * depthStride + u]
+                guard z.isFinite, z > 0.1, z < maxDepth else { continue }
+                // Image y points down; camera space has y up and looks along -z.
+                let local = SIMD3((Float(u) - cx) * z / fx, -(Float(v) - cy) * z / fy, -z)
+                points.append(toWorld.transformPoint(local))
+            }
+        }
+        return points
     }
 
     private static func isFloor(_ plane: ARPlaneAnchor) -> Bool {

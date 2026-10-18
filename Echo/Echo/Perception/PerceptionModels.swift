@@ -50,6 +50,8 @@ nonisolated struct PerceptionConfig: Sendable {
     var obstacleReleaseRate: Float = 0.5   // m/s a sector reading may recede (approaching is instant)
     var chunkEvictionRadius: Float = 15.0  // stored mesh farther than this is dropped
     var forwardHalfWidth: Float = 0.4      // half-width of the walking corridor (shoulder width)
+    var depthSampleStep: Int = 2           // sample every Nth depth-map pixel for the sonar
+    var depthFOVHalfAngle: Float = 0.35    // radians; mesh hits inside this cone defer to the depth map
 
     // Scheduling and rendering.
     var analysisInterval: TimeInterval = 0.1   // 10 Hz hazard + sonar analysis
@@ -134,6 +136,8 @@ nonisolated struct WireframeMeshData: Sendable {
     let anchorID: UUID
     let sequence: UInt64
     let transform: simd_float4x4
+    /// World-space centre of the chunk, for distance culling.
+    let center: SIMD3<Float>
     let positions: [SIMD3<Float>]
     let indices: [UInt32]
     /// Dense material index per face (0..<buckets.count).

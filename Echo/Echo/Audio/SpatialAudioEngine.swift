@@ -51,13 +51,13 @@ final class SpatialAudioEngine {
 
     /// Ping zones for the obstacle in the corridor: (max distance in metres, seconds between pings).
     @ObservationIgnored let wallZones: [(distance: Float, interval: TimeInterval)] = [
-        (0.5, 0.25),
-        (0.8, 0.6),
-        (1.2, 1.5),
+        (0.3, 0.2),
+        (0.45, 0.5),
+        (0.7, 1.2),
     ]
     var alertRange: Float { wallZones.last!.distance }
-    @ObservationIgnored let imminentRange: Float = 0.5          // always ping inside this, moving or not
-    @ObservationIgnored let closingSpeedThreshold: Float = 0.1  // m/s toward the obstacle before pinging
+    @ObservationIgnored let imminentRange: Float = 0.3          // always ping inside this, moving or not
+    @ObservationIgnored let closingSpeedThreshold: Float = 0.15 // m/s toward the obstacle before pinging
     @ObservationIgnored let hazardRange: Float = 1.5            // metres ahead
     @ObservationIgnored let hazardRepeat: TimeInterval = 2.0
 
