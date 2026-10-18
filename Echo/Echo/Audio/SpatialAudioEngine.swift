@@ -223,7 +223,9 @@ final class SpatialAudioEngine {
 
         let synth = AmbientSynth(sampleRate: rate, maxILD: maxILD, maxITD: maxITD, shadowCutoff: shadowCutoff)
         self.synth = synth
-        ambientNode = AVAudioSourceNode(format: stereo) { _, _, frameCount, audioBufferList in
+        // `@Sendable` keeps the render block nonisolated: it runs on the audio thread, and a
+        // main-actor-inferred closure there trips the runtime's executor check.
+        ambientNode = AVAudioSourceNode(format: stereo) { @Sendable _, _, frameCount, audioBufferList in
             let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
             guard buffers.count >= 2,
                   let left = buffers[0].mData?.assumingMemoryBound(to: Float.self),
