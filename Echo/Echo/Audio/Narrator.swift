@@ -108,6 +108,7 @@ final class Narrator {
     @ObservationIgnored private var sideOpenSince: [TimeInterval?] = [nil, nil]
     @ObservationIgnored private var lastPrune: TimeInterval = 0
     @ObservationIgnored private var approachingSince: TimeInterval?
+    @ObservationIgnored private var blockedGuidanceGiven = false
 
     // Tuning
     @ObservationIgnored let hazardLeadTime: Float = 1.5        // seconds before reaching a step
@@ -183,8 +184,8 @@ final class Narrator {
         }) {
             // Once per hazard (ids are stable while it stays put), and never two in quick succession.
             if let line = Self.hazardLine(hazard, vision: fresh, snapshot: snapshot),
-               lastSpoken["hazard"].map({ now - $0 >= 6 }) ?? true,
-               say(line, key: "hazard:\(hazard.id)", every: 20, interrupt: true, alert: true, now: now) {
+               lastSpoken["hazard"].map({ now - $0 >= 10 }) ?? true,
+               say(line, key: "hazard:\(hazard.id)", every: 30, interrupt: true, alert: true, now: now) {
                 lastSpoken["hazard"] = now
                 return
             }
@@ -245,8 +246,8 @@ final class Narrator {
                 }
                 .sorted { ($0.distance ?? 99) < ($1.distance ?? 99) }
             if let nearest = inPath.first, let lateral = nearest.lateralOffset, let distance = nearest.distance,
-               distance <= (verbosity == .quiet ? 2.0 : 3.0),
-               lastSpoken["person"].map({ now - $0 >= (verbosity == .quiet ? 20 : 6) }) ?? true {
+               distance <= (verbosity == .quiet ? 1.8 : 3.0),
+               lastSpoken["person"].map({ now - $0 >= (verbosity == .quiet ? 30 : 6) }) ?? true {
                 let key = nearest.trackID.map { "person:\($0)" } ?? "person:\(nearest.label)"
                 let justCalled = nearest.trackID.flatMap { lastSpoken["approach:\($0)"] }.map { now - $0 < 8 } ?? false
                 if !justCalled {
@@ -261,15 +262,22 @@ final class Narrator {
         }
 
         // 4. Blocked and standing: a doorway if there is one, else which side is open.
-        if let targetDistance, targetDistance <= 0.6, !walking, blockedLongEnough, verbosity != .quiet || closeness > 0.9 {
+        // Once per stop: said when the user has been standing blocked for a moment, then
+        // not again until they have moved on and stopped somewhere else.
+        if let targetDistance, targetDistance <= 0.6, !walking, blockedLongEnough, !blockedGuidanceGiven,
+           verbosity != .quiet || closeness > 0.9 {
+            var line: String?
             if let door = snapshot.openings.first(where: { $0.isDoorway && abs($0.bearing) > 0.4 }) {
-                let line = "Blocked. Doorway \(Self.sideWords(bearing: door.bearing))" + (Self.spoken(door.distance).map { ", \($0)" } ?? "")
-                if say(line, key: "blocked", every: 8, now: now) { return }
+                line = "Blocked. Doorway \(Self.sideWords(bearing: door.bearing))" + (Self.spoken(door.distance).map { ", \($0)" } ?? "")
+            } else if let open = openings(in: snapshot) {
+                line = "Blocked. \(open)"
             }
-            if let line = openings(in: snapshot) {
-                if say("Blocked. \(line)", key: "blocked", every: 8, now: now) { return }
+            if let line, say(line, key: "blocked", every: 6, now: now) {
+                blockedGuidanceGiven = true
+                return
             }
         }
+        if walking || targetDistance == nil || targetDistance! > 1.0 { blockedGuidanceGiven = false }
 
         // 5. Changes in the path: cleared, narrowing, opening.
         if let change = pathLine {
@@ -290,7 +298,7 @@ final class Narrator {
         if let fresh, closeness > 0.3, let (label, _) = Self.nameAhead(snapshot: snapshot, vision: fresh),
            let targetDistance, targetDistance <= objectMinDistance || secondsTo(targetDistance) <= objectLeadTime,
            verbosity != .quiet || (targetDistance <= 0.5 && !walking),
-           lastSpoken["object"].map({ now - $0 >= (verbosity == .quiet ? 20 : 5) }) ?? true {
+           lastSpoken["object"].map({ now - $0 >= (verbosity == .quiet ? 30 : 5) }) ?? true {
             let line = targetDistance < 0.45 ? "\(label), right in front of you" : "\(label) ahead"
             if say(line, key: "object:\(label)", every: 12, now: now) {
                 lastSpoken["object"] = now
@@ -304,7 +312,7 @@ final class Narrator {
             if verbosity != .quiet || sighting?.isSafety == true {
                 var line = Self.signPhrase(name)
                 if let sighting { line += " " + Self.sideWords(bearing: sighting.bearingAtSighting) }
-                _ = say(line, key: "sign:\(name)", every: verbosity == .quiet ? 60 : 25, now: now)
+                _ = say(line, key: "sign:\(name)", every: verbosity == .quiet ? 120 : 25, now: now)
             }
         }
     }
