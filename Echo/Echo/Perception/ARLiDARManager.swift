@@ -31,6 +31,8 @@ final class ARLiDARManager: NSObject {
     private(set) var snapshot: SceneSnapshot?
     private(set) var meshAnchorCount = 0
     private(set) var cameraFeedMode: CameraFeedMode = .full
+    /// Latest people / animal detections and the name of what is ahead (see `VisionObserver`).
+    private(set) var visionReport: VisionReport?
 
     /// Convenience accessors for the HUD.
     var nearestObstacleDistance: Float? { snapshot?.nearestObstacle?.horizontalDistance }
@@ -42,6 +44,8 @@ final class ARLiDARManager: NSObject {
     @ObservationIgnored let config: PerceptionConfig
     @ObservationIgnored private let store: MeshGeometryStore
     @ObservationIgnored private let renderer: SurfaceRenderer
+    @ObservationIgnored private var vision: VisionObserver?
+    @ObservationIgnored private var frameCounter = 0
     @ObservationIgnored private let logger = Logger(subsystem: "echo.perception", category: "ARLiDARManager")
 
     // MARK: Hooks for other subsystems (invoked on the main actor)
@@ -69,6 +73,10 @@ final class ARLiDARManager: NSObject {
         self.store = MeshGeometryStore(config: config)
         self.renderer = SurfaceRenderer(config: config)
         super.init()
+
+        vision = VisionObserver { [weak self] report in
+            self?.visionReport = report
+        }
 
         capabilities = Self.probeCapabilities()
         configureView()
@@ -417,6 +425,34 @@ extension ARLiDARManager: @preconcurrency ARSessionDelegate {
         drainPendingAnchors(timestamp: frame.timestamp)
         onFrame?(frame)
         scheduleAnalysisIfNeeded(frame: frame)
+        frameCounter += 1
+        if frameCounter % config.visionFrameStride == 0 { submitToVision(frame) }
+    }
+
+    /// Hands the camera image, depth and a region around the sonar target to the Vision worker.
+    private func submitToVision(_ frame: ARFrame) {
+        var region: CGRect?
+        if let point = snapshot?.nearestForwardObstacle?.point {
+            // Upright (portrait) viewport, then Vision's bottom-left-origin normalised space.
+            let viewport = CGSize(width: frame.camera.imageResolution.height, height: frame.camera.imageResolution.width)
+            let p = frame.camera.projectPoint(point, orientation: .portrait, viewportSize: viewport)
+            let x = p.x / viewport.width, y = 1 - p.y / viewport.height
+            if x.isFinite, y.isFinite {
+                let r = CGRect(x: x - 0.22, y: y - 0.28, width: 0.44, height: 0.56)
+                    .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+                if r.width > 0.1, r.height > 0.1 { region = r }
+            }
+        }
+        vision?.process(VisionObserver.Input(
+            image: frame.capturedImage,
+            depth: frame.sceneDepth?.depthMap,
+            depthConfidence: frame.sceneDepth?.confidenceMap,
+            intrinsics: frame.camera.intrinsics,
+            imageResolution: frame.camera.imageResolution,
+            cameraTransform: frame.camera.transform,
+            regionAhead: region,
+            timestamp: ProcessInfo.processInfo.systemUptime
+        ))
     }
 
     func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {

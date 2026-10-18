@@ -5,6 +5,7 @@ import simd
 struct ContentView: View {
     @State private var manager = ARLiDARManager()
     @State private var audio = SpatialAudioEngine()
+    @State private var narrator = Narrator()
 
     var body: some View {
         ARWireframeView(manager: manager)
@@ -12,7 +13,10 @@ struct ContentView: View {
             .overlay(alignment: .top) { header }
             .overlay(alignment: .bottom) { footer }
             .onAppear {
-                manager.onSnapshot = { [audio] in audio.update(snapshot: $0) }
+                manager.onSnapshot = { [audio, narrator, manager] snapshot in
+                    audio.update(snapshot: snapshot)
+                    narrator.update(snapshot: snapshot, vision: manager.visionReport, closeness: audio.closeness)
+                }
                 manager.start()
                 audio.start()
             }
@@ -35,6 +39,24 @@ struct ContentView: View {
         let c = Double(audio.closeness)
         if c < 0.5 { return Theme.clear.mix(with: Theme.caution, by: c * 2) }
         return Theme.caution.mix(with: Theme.danger, by: (c - 0.5) * 2)
+    }
+
+    /// People / animals the camera sees in front, nearest first.
+    private var peopleAhead: [VisionDetection] {
+        guard let report = manager.visionReport, ProcessInfo.processInfo.systemUptime - report.timestamp < 1 else { return [] }
+        return report.detections.filter { abs($0.bearing) <= 0.8 }.sorted { ($0.distance ?? 99) < ($1.distance ?? 99) }
+    }
+
+    /// Second line under the status: what is ahead, by name.
+    private var sceneLine: String? {
+        if let spoken = narrator.lastLine { return spoken }
+        if let person = peopleAhead.first {
+            if let d = person.distance { return String(format: "%@ · %.1f m", person.label, d) }
+            return person.label
+        }
+        if audio.closeness > 0.3, let report = manager.visionReport, let label = report.labelAhead,
+           report.labelConfidence >= 0.3 { return label }
+        return nil
     }
 
     private var statusWord: String {
@@ -107,16 +129,24 @@ struct ContentView: View {
                            active: running, color: hazard == nil ? zoneColor : Theme.danger)
                 .frame(width: 168, height: 168)
 
-            Text(statusWord)
-                .font(.system(.title2, design: .rounded).weight(.bold))
-                .foregroundStyle(.white)
-                .contentTransition(.interpolate)
+            VStack(spacing: 4) {
+                Text(statusWord)
+                    .font(.system(.title2, design: .rounded).weight(.bold))
+                    .foregroundStyle(.white)
+                    .contentTransition(.interpolate)
+                Text(sceneLine ?? " ")
+                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .contentTransition(.interpolate)
+            }
 
             HStack(spacing: 22) {
                 IconToggle(symbol: audio.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
                            active: !audio.isMuted) { audio.isMuted.toggle() }
                 IconToggle(symbol: "iphone.radiowaves.left.and.right",
                            active: audio.hapticsEnabled) { audio.hapticsEnabled.toggle() }
+                IconToggle(symbol: narrator.isEnabled ? "waveform.and.mic" : "waveform.slash",
+                           active: narrator.isEnabled) { narrator.isEnabled.toggle() }
                 IconToggle(symbol: "arrow.counterclockwise", active: true) { manager.reset() }
             }
             .padding(.horizontal, 18)

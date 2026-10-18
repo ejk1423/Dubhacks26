@@ -3,10 +3,12 @@
 //  Echo
 //
 //  Parking-sensor style collision warning, driven by `SceneSnapshot`s. One target: the
-//  nearest surface inside a forward cone (`coneHalfAngle`) within `alertRange`. It beeps
-//  faster, louder and slightly higher as the user closes in, and goes solid near
-//  contact. Nothing beside or behind the user makes a sound. Trip hazards add a low
-//  rising double chirp. Silence means the way ahead is clear.
+//  nearest surface inside a forward cone (`coneHalfAngle`) within `alertRange`. Beyond
+//  `imminentRange` it only beeps while the user is actually closing in on the target;
+//  inside, always. Beeps are soft and low until the last stretch, where they get faster,
+//  louder and higher, going solid near contact. Nothing beside or behind the user makes
+//  a sound, and silence means the way ahead is clear. Trip hazards are spoken by
+//  `Narrator`, not beeped.
 //
 //  Direction is a gentle nuance, not the message: the beep is mixed to stereo with a
 //  small level and time difference toward the target's bearing (capped at
@@ -42,13 +44,13 @@ final class SpatialAudioEngine {
 
     // MARK: Tuning
 
-    @ObservationIgnored let alertRange: Float = 1.2             // metres; silent beyond
+    @ObservationIgnored let alertRange: Float = 1.0             // metres; silent beyond
+    @ObservationIgnored let imminentRange: Float = 0.45         // metres; inside this beep even when standing still
+    @ObservationIgnored let closingSpeedThreshold: Float = 0.1  // m/s toward the target before beeping
     @ObservationIgnored let touchDistance: Float = 0.3          // metres; solid tone at or inside
     @ObservationIgnored let coneHalfAngle: Float = 40 * .pi / 180
-    @ObservationIgnored let slowestInterval: TimeInterval = 1.0
+    @ObservationIgnored let slowestInterval: TimeInterval = 1.2
     @ObservationIgnored let fastestInterval: TimeInterval = 0.09
-    @ObservationIgnored let hazardRange: Float = 1.5
-    @ObservationIgnored let hazardRepeat: TimeInterval = 2.0
 
     @ObservationIgnored let maxLateral: Float = 0.5             // sin(bearing) cap: never more than mildly off-centre
     @ObservationIgnored let maxILD: Float = 7                   // dB quieter in the far ear at maxLateral
@@ -59,8 +61,6 @@ final class SpatialAudioEngine {
     @ObservationIgnored private let engine = AVAudioEngine()
     @ObservationIgnored private let stereo: AVAudioFormat
     @ObservationIgnored private let beepPlayer = AVAudioPlayerNode()
-    @ObservationIgnored private let hazardPlayer = AVAudioPlayerNode()
-    @ObservationIgnored private let hazardTone: [Float]
     @ObservationIgnored private let haptic = UIImpactFeedbackGenerator(style: .rigid)
     @ObservationIgnored private let logger = Logger(subsystem: "echo.audio", category: "SpatialAudioEngine")
 
@@ -69,7 +69,7 @@ final class SpatialAudioEngine {
     @ObservationIgnored private var snapshot: SceneSnapshot?
     @ObservationIgnored private var snapshotTime: TimeInterval = 0
     @ObservationIgnored private var lastBeep: TimeInterval = 0
-    @ObservationIgnored private var lastHazardTone: TimeInterval = 0
+    @ObservationIgnored private var targetHistory: [(time: TimeInterval, distance: Float)] = []
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
 
@@ -77,12 +77,7 @@ final class SpatialAudioEngine {
 
     init() {
         stereo = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
-        let rate = stereo.sampleRate
-        hazardTone = Self.chirp(rate: rate, from: 380, to: 620, duration: 0.09, decay: 0.08)
-            + [Float](repeating: 0, count: Int(0.07 * rate))
-            + Self.chirp(rate: rate, from: 380, to: 620, duration: 0.09, decay: 0.08)
         engine.attach(beepPlayer)
-        engine.attach(hazardPlayer)
     }
 
     // MARK: Lifecycle
@@ -106,7 +101,6 @@ final class SpatialAudioEngine {
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
         beepPlayer.stop()
-        hazardPlayer.stop()
         engine.stop()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
@@ -129,11 +123,9 @@ final class SpatialAudioEngine {
             updateRoute()
 
             engine.connect(beepPlayer, to: engine.mainMixerNode, format: stereo)
-            engine.connect(hazardPlayer, to: engine.mainMixerNode, format: stereo)
             engine.prepare()
             try engine.start()
             beepPlayer.play()
-            hazardPlayer.play()
             logger.info("Audio engine running on \(session.currentRoute.outputs.map(\.portName).joined(separator: ", "), privacy: .public)")
         } catch {
             logger.error("Audio engine failed to start: \(error.localizedDescription, privacy: .public)")
@@ -192,22 +184,22 @@ final class SpatialAudioEngine {
         guard let target else {
             closeness = 0
             targetDistance = nil
+            targetHistory.removeAll()
             return
         }
-        let c = min(1, max(0, (alertRange - target.hit.horizontalDistance) / (alertRange - touchDistance)))
+        let distance = target.hit.horizontalDistance
+        let c = min(1, max(0, (alertRange - distance) / (alertRange - touchDistance)))
         closeness = c
-        targetDistance = target.hit.horizontalDistance
+        targetDistance = distance
 
-        // Trip hazards first: a rising double chirp, then nothing else for a moment.
-        if let hazard = snap.tripHazards.first(where: { $0.distanceAhead > 0 && $0.distanceAhead <= hazardRange }),
-           now - lastHazardTone >= hazardRepeat {
-            let azimuth = bearing(of: hazard.position, in: snap)
-            hazardPlayer.scheduleBuffer(render(hazardTone, azimuth: azimuth, gain: 0.9), completionHandler: nil)
-            lastHazardTone = now
-            lastBeep = now + 0.3
-            if hapticsEnabled { haptic.impactOccurred(intensity: 1) }
-            return
+        // Closing speed over the last ~0.6 s of readings.
+        targetHistory.append((snap.timestamp, distance))
+        targetHistory.removeAll { snap.timestamp - $0.time > 0.6 }
+        var closingSpeed: Float = 0
+        if let first = targetHistory.first, let last = targetHistory.last, last.time - first.time >= 0.25 {
+            closingSpeed = (first.distance - last.distance) / Float(last.time - first.time)
         }
+        guard distance <= imminentRange || closingSpeed >= closingSpeedThreshold else { return }
 
         // Beep rate and loudness rise steeply near the end; solid near contact.
         let far = 1 - c
@@ -216,9 +208,11 @@ final class SpatialAudioEngine {
         lastBeep = now
         guard !isMuted else { return }
 
-        let beep = Self.beep(rate: stereo.sampleRate, frequency: 1_000 + 500 * Double(c),
-                             duration: c > 0.95 ? 0.10 : 0.055)
-        beepPlayer.scheduleBuffer(render(beep, azimuth: target.bearing, gain: 0.3 + 0.7 * c), completionHandler: nil)
+        // Low and soft until the last stretch: pitch only climbs in the final 30 cm or so.
+        let urgency = c * c * c
+        let beep = Self.beep(rate: stereo.sampleRate, frequency: 620 + 680 * Double(urgency),
+                             duration: c > 0.95 ? 0.10 : 0.05)
+        beepPlayer.scheduleBuffer(render(beep, azimuth: target.bearing, gain: 0.18 + 0.72 * c * c), completionHandler: nil)
         if hapticsEnabled { haptic.impactOccurred(intensity: CGFloat(0.3 + 0.7 * c)) }
     }
 
@@ -257,7 +251,7 @@ final class SpatialAudioEngine {
 
     // MARK: Sounds
 
-    /// A clean beep: sine with a soft second harmonic, 3 ms attack, 15 ms release.
+    /// A clean beep: sine with a faint second harmonic, 3 ms attack, 15 ms release.
     private static func beep(rate: Double, frequency: Double, duration: Double) -> [Float] {
         let n = Int(duration * rate)
         let attack = Int(0.003 * rate)
@@ -268,24 +262,8 @@ final class SpatialAudioEngine {
             var env = 1.0
             if i < attack { env = Double(i) / Double(attack) }
             if i > n - release { env = Double(n - i) / Double(release) }
-            let value = sin(2 * .pi * frequency * t) + 0.25 * sin(4 * .pi * frequency * t)
+            let value = sin(2 * .pi * frequency * t) + 0.12 * sin(4 * .pi * frequency * t)
             out[i] = Float(0.7 * env * value)
-        }
-        return out
-    }
-
-    /// A sine sweep from `from` to `to` Hz with a 2 ms attack and exponential decay.
-    private static func chirp(rate: Double, from: Double, to: Double, duration: Double, decay: Double) -> [Float] {
-        let n = Int(duration * rate)
-        let attack = Int(0.002 * rate)
-        var out = [Float](repeating: 0, count: n)
-        var phase = 0.0
-        for i in 0..<n {
-            let u = Double(i) / Double(n)
-            phase += 2 * .pi * (from + (to - from) * u) / rate
-            var env = exp(-Double(i) / (decay * rate))
-            if i < attack { env *= Double(i) / Double(attack) }
-            out[i] = Float(env * sin(phase))
         }
         return out
     }

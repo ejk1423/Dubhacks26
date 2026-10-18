@@ -59,6 +59,7 @@ nonisolated struct PerceptionConfig: Sendable {
 
     // Scheduling and rendering.
     var analysisInterval: TimeInterval = 0.05  // 20 Hz hazard + sonar + map analysis
+    var visionFrameStride: Int = 12            // run Vision on every Nth ARFrame (60 Hz -> 5 Hz)
     var maxAnchorUpdatesPerFrame: Int = 2      // mesh anchors converted per ARFrame (60 Hz)
     var maxUpsertsInFlight: Int = 3            // chunks queued on the store before ingestion waits
     var renderRadius: Float = 3.5              // mesh chunks farther than this are hidden (shader fades out by 3.5 m)
