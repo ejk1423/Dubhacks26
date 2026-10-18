@@ -4,7 +4,7 @@
 //
 //  Owns the ARView + ARSession, configures LiDAR scene reconstruction, copies
 //  mesh anchors into Sendable chunks, and schedules the background analysis
-//  (`MeshGeometryStore`) and wireframe rendering (`WireframeRenderer`).
+//  (`MeshGeometryStore`) and surface rendering (`SurfaceRenderer`).
 //
 //  Threading model (Swift 6, default MainActor isolation):
 //    * ARKit delivers delegate callbacks on the main queue (`delegateQueue = .main`),
@@ -41,7 +41,7 @@ final class ARLiDARManager: NSObject {
     @ObservationIgnored let arView: ARView
     @ObservationIgnored let config: PerceptionConfig
     @ObservationIgnored private let store: MeshGeometryStore
-    @ObservationIgnored private let renderer: WireframeRenderer
+    @ObservationIgnored private let renderer: SurfaceRenderer
     @ObservationIgnored private let logger = Logger(subsystem: "echo.perception", category: "ARLiDARManager")
 
     // MARK: Hooks for other subsystems (invoked on the main actor)
@@ -67,7 +67,7 @@ final class ARLiDARManager: NSObject {
         self.config = config
         self.arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
         self.store = MeshGeometryStore(config: config)
-        self.renderer = WireframeRenderer(config: config)
+        self.renderer = SurfaceRenderer(config: config)
         super.init()
 
         capabilities = Self.probeCapabilities()

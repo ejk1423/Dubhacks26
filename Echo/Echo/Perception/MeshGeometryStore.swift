@@ -5,7 +5,7 @@
 //  Actor that owns a copy of every LiDAR mesh chunk and does all of the heavy
 //  geometry math off the main thread:
 //
-//    * builds point-cloud render data (per-face material buckets) for each chunk,
+//    * builds render data (triangles with per-face material buckets) for each chunk,
 //    * estimates the local ground plane (ARPlaneAnchor floor, cross-checked
 //      against the median height of floor-classified mesh vertices),
 //    * finds the nearest obstacle for the wall sonar per 15-degree sector (published
@@ -197,37 +197,26 @@ actor MeshGeometryStore {
             }
         }
 
-        // Point cloud: one dot per world-space `dotSpacing` voxel, placed at the centroid of
-        // the vertices inside it (needs `dotMinVertices`, so stray vertices draw nothing).
-        // World-space voxels give a steady lattice across chunk updates; the raw vertices
-        // jitter from scan to scan. Each dot is a tiny octahedron so it reads as a point
-        // from any angle. Only walls and furniture (the things you can walk into) are drawn.
-        struct Voxel { var sum = SIMD3<Float>(repeating: 0); var count = 0; var bucket = SurfaceBucket.unknown }
-        let spacing = config.dotSpacing
-        var voxels: [SIMD3<Int32>: Voxel] = [:]
-        for i in 0..<n {
-            let bucket = SurfaceBucket(meshClass: vertexClasses[i])
-            guard bucket == .wall || bucket == .furniture else { continue }
-            let key = SIMD3<Int32>(world[i] / spacing, rounding: .down)
-            voxels[key, default: Voxel()].sum += world[i]
-            voxels[key]!.count += 1
-            voxels[key]!.bucket = bucket
-        }
-
-        let r = config.dotRadius
-        let offsets: [SIMD3<Float>] = [[r, 0, 0], [-r, 0, 0], [0, r, 0], [0, -r, 0], [0, 0, r], [0, 0, -r]]
-        let octahedron: [UInt32] = [0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4, 2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5]
-        var dotPositions: [SIMD3<Float>] = []
-        var dotIndices: [UInt32] = []
+        // Render geometry: the real triangles, bucketed per face by class. Ceilings are
+        // dropped (nothing to walk into, and they fill the view); everything else is drawn
+        // and the surface shader decides how visible it is from its distance to the user.
+        var keptIndices: [UInt32] = []
+        keptIndices.reserveCapacity(chunk.indices.count)
         var rawMaterials: [UInt32] = []
+        rawMaterials.reserveCapacity(faceCount)
         var usedBuckets = [Bool](repeating: false, count: SurfaceBucket.allCases.count)
-        for voxel in voxels.values where voxel.count >= config.dotMinVertices {
-            let p = voxel.sum / Float(voxel.count)
-            let base = UInt32(dotPositions.count)
-            for o in offsets { dotPositions.append(p + o) }
-            for v in octahedron { dotIndices.append(base + v) }
-            for _ in 0..<(octahedron.count / 3) { rawMaterials.append(voxel.bucket.rawValue) }
-            usedBuckets[Int(voxel.bucket.rawValue)] = true
+        chunk.indices.withUnsafeBufferPointer { idx in
+            for f in 0..<faceCount {
+                let base = f * 3
+                guard base + 2 < idx.count else { break }
+                let bucket = SurfaceBucket(meshClass: chunk.faceClasses[f])
+                guard bucket != .ceiling else { continue }
+                keptIndices.append(idx[base])
+                keptIndices.append(idx[base + 1])
+                keptIndices.append(idx[base + 2])
+                rawMaterials.append(bucket.rawValue)
+                usedBuckets[Int(bucket.rawValue)] = true
+            }
         }
 
         // Dense material indices so the renderer only allocates the materials this chunk uses.
@@ -252,10 +241,10 @@ actor MeshGeometryStore {
         return WireframeMeshData(
             anchorID: chunk.anchorID,
             sequence: chunk.sequence,
-            transform: matrix_identity_float4x4,   // dots are already in world space
+            transform: chunk.transform,
             center: (aabbMin + aabbMax) / 2,
-            positions: dotPositions,
-            indices: dotIndices,
+            positions: chunk.localPositions,
+            indices: keptIndices,
             faceMaterials: faceMaterials,
             buckets: buckets
         )

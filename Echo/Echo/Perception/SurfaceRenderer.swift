@@ -1,32 +1,35 @@
 //
-//  WireframeRenderer.swift
+//  SurfaceRenderer.swift
 //  Echo
 //
-//  Turns `WireframeMeshData` into RealityKit entities drawn as glowing wireframes
-//  (drawn as sparse dots): one `ModelEntity` per ARMeshAnchor with per-face material
-//  buckets, plus a translucent red overlay entity for the current trip hazards.
+//  Turns `WireframeMeshData` into RealityKit entities: one `ModelEntity` per
+//  ARMeshAnchor drawn as translucent, class-tinted surfaces with a world-space grid
+//  that fade in as the user approaches (see `EchoSurface.metal`), plus a red overlay
+//  entity for the current trip hazards.
 //
-//  Line rendering uses `UnlitMaterial.triangleFillMode = .lines`, so the colours are
-//  independent of scene lighting and stay bright over a dimmed camera feed.
+//  The surface shader reads the camera position and time from RealityKit's uniforms,
+//  so the look updates every frame with no CPU work here. If the shader cannot be
+//  loaded, plain translucent unlit fills are used instead.
 //
 
 import Foundation
+import Metal
 import RealityKit
 import UIKit
 import simd
 import os
 
 @MainActor
-final class WireframeRenderer {
+final class SurfaceRenderer {
 
     // MARK: Palette
 
     enum Palette {
-        static let floor     = UIColor(red: 0.20, green: 1.00, blue: 0.50, alpha: 1)   // neon green
-        static let wall      = UIColor(red: 0.00, green: 0.92, blue: 1.00, alpha: 1)   // cyan
-        static let ceiling   = UIColor(red: 0.35, green: 0.45, blue: 1.00, alpha: 1)   // indigo
-        static let furniture = UIColor(red: 1.00, green: 0.72, blue: 0.20, alpha: 1)   // amber
-        static let unknown   = UIColor(red: 0.70, green: 0.75, blue: 0.82, alpha: 1)   // grey
+        static let floor     = UIColor(red: 0.12, green: 0.60, blue: 0.35, alpha: 1)   // dim green: walkable, recedes
+        static let wall      = UIColor(red: 0.00, green: 0.90, blue: 1.00, alpha: 1)   // cyan
+        static let ceiling   = UIColor(red: 0.35, green: 0.45, blue: 1.00, alpha: 1)   // (not drawn)
+        static let furniture = UIColor(red: 1.00, green: 0.68, blue: 0.20, alpha: 1)   // amber: obstacles
+        static let unknown   = UIColor(red: 0.45, green: 0.50, blue: 0.60, alpha: 1)   // grey
         static let hazard    = UIColor(red: 1.00, green: 0.16, blue: 0.16, alpha: 1)   // red
 
         static func color(for bucket: SurfaceBucket) -> UIColor {
@@ -38,29 +41,20 @@ final class WireframeRenderer {
             case .unknown:   return unknown
             }
         }
-
-        static func opacity(for bucket: SurfaceBucket) -> Float {
-            switch bucket {
-            case .floor:                    return 0.4    // walkable; recede so obstacles stand out
-            case .wall, .furniture:         return 0.95
-            case .ceiling:                  return 0.45
-            case .unknown:                  return 0.55
-            }
-        }
     }
 
     // MARK: State
 
-    /// World-locked root for every wireframe entity. Add it to `arView.scene`.
+    /// World-locked root for every mesh entity. Add it to `arView.scene`.
     let root: AnchorEntity
 
     private let config: PerceptionConfig
-    private let logger = Logger(subsystem: "echo.perception", category: "WireframeRenderer")
+    private let logger = Logger(subsystem: "echo.perception", category: "SurfaceRenderer")
 
     private var meshEntities: [UUID: ModelEntity] = [:]
     private var sequences: [UUID: UInt64] = [:]
     private var centers: [UUID: SIMD3<Float>] = [:]
-    private var bucketMaterials: [SurfaceBucket: UnlitMaterial] = [:]
+    private var bucketMaterials: [SurfaceBucket: any Material] = [:]
 
     private let hazardFill: ModelEntity
     private let hazardFillMaterial: UnlitMaterial
@@ -71,22 +65,17 @@ final class WireframeRenderer {
         self.config = config
 
         root = AnchorEntity(world: matrix_identity_float4x4)
-        root.name = "echo.wireframe.root"
+        root.name = "echo.surface.root"
 
+        let shader = Self.loadSurfaceShader(logger: logger)
         for bucket in SurfaceBucket.allCases {
-            bucketMaterials[bucket] = Self.makeMaterial(
-                Palette.color(for: bucket),
-                opacity: Palette.opacity(for: bucket),
-                lines: false
-            )
+            bucketMaterials[bucket] = Self.makeSurfaceMaterial(Palette.color(for: bucket), shader: shader)
         }
 
-        hazardFillMaterial = Self.makeMaterial(Palette.hazard, opacity: 0.25, lines: false)
-
+        hazardFillMaterial = Self.makeFlatMaterial(Palette.hazard, opacity: 0.35)
         hazardFill = ModelEntity()
         hazardFill.name = "echo.hazard.fill"
         hazardFill.isEnabled = false
-
         root.addChild(hazardFill)
     }
 
@@ -98,7 +87,7 @@ final class WireframeRenderer {
 
     // MARK: Mesh chunks
 
-    /// Builds or replaces the wireframe entity for one mesh anchor. Out-of-order results
+    /// Builds or replaces the entity for one mesh anchor. Out-of-order results
     /// (an older `sequence` arriving after a newer one) are ignored.
     func apply(_ data: WireframeMeshData) {
         if let last = sequences[data.anchorID], last > data.sequence { return }
@@ -155,6 +144,7 @@ final class WireframeRenderer {
     }
 
     /// Hides chunks far from the user so a long walk does not accumulate draw calls.
+    /// (The shader has already faded them out by then.)
     func cull(around cameraPosition: SIMD3<Float>, radius: Float) {
         let limit = radius + 2.0   // chunks are ~1-2 m wide
         for (id, entity) in meshEntities {
@@ -190,9 +180,31 @@ final class WireframeRenderer {
 
     // MARK: Materials
 
-    private static func makeMaterial(_ color: UIColor, opacity: Float, lines: Bool) -> UnlitMaterial {
+    private static func loadSurfaceShader(logger: Logger) -> CustomMaterial.SurfaceShader? {
+        guard let device = MTLCreateSystemDefaultDevice(), let library = device.makeDefaultLibrary() else {
+            logger.error("No Metal default library; falling back to flat surfaces")
+            return nil
+        }
+        return CustomMaterial.SurfaceShader(named: "echoSurface", in: library)
+    }
+
+    private static func makeSurfaceMaterial(_ color: UIColor, shader: CustomMaterial.SurfaceShader?) -> any Material {
+        if let shader {
+            do {
+                var material = try CustomMaterial(surfaceShader: shader, lightingModel: .unlit)
+                material.baseColor = .init(tint: color)
+                material.blending = .transparent(opacity: 1.0)   // the shader sets the real opacity
+                material.faceCulling = .none
+                return material
+            } catch {
+                // Fall through to the flat material.
+            }
+        }
+        return makeFlatMaterial(color, opacity: 0.22)
+    }
+
+    private static func makeFlatMaterial(_ color: UIColor, opacity: Float) -> UnlitMaterial {
         var material = UnlitMaterial(color: color)
-        material.triangleFillMode = lines ? .lines : .fill
         material.blending = .transparent(opacity: .init(floatLiteral: opacity))
         material.faceCulling = .none
         return material

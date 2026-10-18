@@ -57,10 +57,7 @@ nonisolated struct PerceptionConfig: Sendable {
     var analysisInterval: TimeInterval = 0.1   // 10 Hz hazard + sonar analysis
     var maxAnchorUpdatesPerFrame: Int = 1      // mesh anchors converted per ARFrame (60 Hz)
     var maxUpsertsInFlight: Int = 2            // chunks queued on the store before ingestion waits
-    var renderRadius: Float = 3.0              // wireframe chunks farther than this are hidden
-    var dotSpacing: Float = 0.2                // one rendered dot per voxel of this size
-    var dotRadius: Float = 0.006               // half-size of each dot
-    var dotMinVertices: Int = 3                // vertices a voxel needs before it gets a dot
+    var renderRadius: Float = 3.0              // mesh chunks farther than this are hidden (shader fades out by 3 m)
     var hazardOverlayLift: Float = 0.015       // lift the red overlay above the mesh to avoid z-fighting
     var maxOverlayTriangles: Int = 20_000
 }
@@ -129,9 +126,9 @@ nonisolated struct PlaneInfo: Sendable {
     var area: Float { width * height }
 }
 
-// MARK: - Render transfer objects (MeshGeometryStore -> WireframeRenderer)
+// MARK: - Render transfer objects (MeshGeometryStore -> SurfaceRenderer)
 
-/// Everything the renderer needs to (re)build one wireframe chunk.
+/// Everything the renderer needs to (re)build one mesh chunk.
 nonisolated struct WireframeMeshData: Sendable {
     let anchorID: UUID
     let sequence: UInt64
