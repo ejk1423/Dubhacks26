@@ -7,10 +7,15 @@
 //  range grows with walking speed (`leadTime` seconds of travel, at least `alertRange`),
 //  so a brisk walker is warned earlier than someone shuffling. Beyond `imminentRange` it
 //  only beeps while the user is actually closing in on the target; inside, always.
-//  Beeps duck while the narrator is speaking. Beeps are soft and low until the last stretch, where they get faster,
-//  louder and higher, going solid near contact. Nothing beside or behind the user makes
-//  a sound, and silence means the way ahead is clear. Trip hazards are spoken by
-//  `Narrator`, not beeped.
+//  Beeps duck while the narrator is speaking. Beeps are soft and low until the last
+//  stretch, where they get faster, louder and higher, going solid near contact. Nothing
+//  beside or behind the user makes a sound, and silence means the way ahead is clear.
+//  Trip hazards are spoken by `Narrator`, not beeped.
+//
+//  Sound vocabulary, so each sound means one thing:
+//    * Beep (620 Hz rising): something in the way ahead, closer as it quickens.
+//    * Tick (one soft high click): the way ahead just became clear after being blocked.
+//    * Two-tone chime (rising): a spoken warning is about to follow; listen.
 //
 //  Direction is a gentle nuance, not the message: the beep is mixed to stereo with a
 //  small level and time difference toward the target's bearing (capped at
@@ -32,6 +37,9 @@ import os
 @Observable
 final class SpatialAudioEngine {
 
+    /// The engine most recently started, so `Narrator` can play earcons without wiring.
+    static weak var current: SpatialAudioEngine?
+
     // MARK: Observable state (read by the HUD)
 
     var isMuted = false
@@ -39,12 +47,18 @@ final class SpatialAudioEngine {
     var hapticsEnabled = true
     /// Set while speech is playing so beeps drop under it.
     var ducked = false
+    /// Earcons (clear tick, pre-speech chime) can be switched off independently of beeps.
+    var earconsEnabled = true
     private(set) var isRunning = false
     private(set) var headphonesConnected = false
     /// 0 (nothing in range) ... 1 (at contact) for the current target.
     private(set) var closeness: Float = 0
     /// Distance to the current target in metres, nil when the cone is clear.
     private(set) var targetDistance: Float?
+    /// Bearing of the current target, radians, right positive; nil when clear.
+    private(set) var targetBearing: Float?
+    /// Uptime when the path last went from blocked to clear (the tick), for the HUD.
+    private(set) var lastClearedTime: TimeInterval = 0
 
     // MARK: Tuning
 
@@ -58,8 +72,12 @@ final class SpatialAudioEngine {
     @ObservationIgnored let slowestInterval: TimeInterval = 1.2
     @ObservationIgnored let fastestInterval: TimeInterval = 0.09
 
+    @ObservationIgnored let blockedCloseness: Float = 0.35      // closeness that counts as "blocked" for the clear tick
+    @ObservationIgnored let blockedHold: TimeInterval = 0.4     // seconds blocked before clearing earns a tick
+    @ObservationIgnored let clearHold: TimeInterval = 0.45      // seconds clear before the tick plays
+
     @ObservationIgnored let maxLateral: Float = 0.5             // sin(bearing) cap: never more than mildly off-centre
-    @ObservationIgnored let maxILD: Float = 7                   // dB quieter in the far ear at maxLateral
+    @ObservationIgnored let maxILD: Float = 6                   // dB quieter in the far ear at maxLateral
     @ObservationIgnored let maxITD: Float = 0.0003              // seconds later in the far ear at maxLateral
 
     // MARK: Audio graph
@@ -67,7 +85,9 @@ final class SpatialAudioEngine {
     @ObservationIgnored private let engine = AVAudioEngine()
     @ObservationIgnored private let stereo: AVAudioFormat
     @ObservationIgnored private let beepPlayer = AVAudioPlayerNode()
+    @ObservationIgnored private let cuePlayer = AVAudioPlayerNode()
     @ObservationIgnored private let haptic = UIImpactFeedbackGenerator(style: .rigid)
+    @ObservationIgnored private let softHaptic = UIImpactFeedbackGenerator(style: .soft)
     @ObservationIgnored private let logger = Logger(subsystem: "echo.audio", category: "SpatialAudioEngine")
 
     // MARK: Scheduling
@@ -75,15 +95,26 @@ final class SpatialAudioEngine {
     @ObservationIgnored private var snapshot: SceneSnapshot?
     @ObservationIgnored private var snapshotTime: TimeInterval = 0
     @ObservationIgnored private var lastBeep: TimeInterval = 0
+    @ObservationIgnored private var beepsHeldUntil: TimeInterval = 0
     @ObservationIgnored private var targetHistory: [(time: TimeInterval, distance: Float)] = []
+    @ObservationIgnored private var blockedSince: TimeInterval?
+    @ObservationIgnored private var wasBlocked = false
+    @ObservationIgnored private var clearSince: TimeInterval?
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
+
+    // Pre-rendered cues (mono samples at the stereo format's rate).
+    @ObservationIgnored private let clearTick: [Float]
+    @ObservationIgnored private let alertChime: [Float]
 
     // MARK: Init
 
     init() {
         stereo = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+        clearTick = Self.tick(rate: stereo.sampleRate)
+        alertChime = Self.chime(rate: stereo.sampleRate)
         engine.attach(beepPlayer)
+        engine.attach(cuePlayer)
     }
 
     // MARK: Lifecycle
@@ -91,6 +122,7 @@ final class SpatialAudioEngine {
     func start() {
         guard !isRunning else { return }
         isRunning = true
+        Self.current = self
         observeSystemEvents()
         restartEngine()
         haptic.prepare()
@@ -102,11 +134,13 @@ final class SpatialAudioEngine {
     func stop() {
         guard isRunning else { return }
         isRunning = false
+        if Self.current === self { Self.current = nil }
         timer?.invalidate()
         timer = nil
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
         beepPlayer.stop()
+        cuePlayer.stop()
         engine.stop()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
@@ -115,6 +149,33 @@ final class SpatialAudioEngine {
     func update(snapshot: SceneSnapshot) {
         self.snapshot = snapshot
         snapshotTime = ProcessInfo.processInfo.systemUptime
+    }
+
+    // MARK: Earcons
+
+    /// Rising two-tone chime: a spoken warning follows. Returns its duration so the caller
+    /// can delay the utterance. Beeps are held for the chime so it is heard on its own.
+    @discardableResult
+    func playAlertEarcon() -> TimeInterval {
+        let duration = Double(alertChime.count) / stereo.sampleRate
+        guard engine.isRunning, earconsEnabled, !isMuted else { return 0 }
+        beepsHeldUntil = ProcessInfo.processInfo.systemUptime + duration + 0.1
+        cuePlayer.scheduleBuffer(render(alertChime, azimuth: 0, gain: 0.55), completionHandler: nil)
+        if hapticsEnabled { softHaptic.impactOccurred(intensity: 0.6) }
+        return duration
+    }
+
+    /// One soft click: the way ahead is clear again.
+    func playClearTick() {
+        guard engine.isRunning, earconsEnabled, !isMuted else { return }
+        cuePlayer.scheduleBuffer(render(clearTick, azimuth: 0, gain: 0.35), completionHandler: nil)
+        if hapticsEnabled { softHaptic.impactOccurred(intensity: 0.4) }
+    }
+
+    /// Quiet acknowledgement click for button presses (describe, where am I).
+    func playAcknowledge() {
+        guard engine.isRunning, earconsEnabled, !isMuted else { return }
+        cuePlayer.scheduleBuffer(render(clearTick, azimuth: 0, gain: 0.2), completionHandler: nil)
     }
 
     // MARK: Engine
@@ -129,9 +190,11 @@ final class SpatialAudioEngine {
             updateRoute()
 
             engine.connect(beepPlayer, to: engine.mainMixerNode, format: stereo)
+            engine.connect(cuePlayer, to: engine.mainMixerNode, format: stereo)
             engine.prepare()
             try engine.start()
             beepPlayer.play()
+            cuePlayer.play()
             logger.info("Audio engine running on \(session.currentRoute.outputs.map(\.portName).joined(separator: ", "), privacy: .public)")
         } catch {
             logger.error("Audio engine failed to start: \(error.localizedDescription, privacy: .public)")
@@ -172,6 +235,10 @@ final class SpatialAudioEngine {
         guard engine.isRunning, let snap = snapshot, now - snapshotTime < 0.5 else {
             closeness = 0
             targetDistance = nil
+            targetBearing = nil
+            blockedSince = nil
+            wasBlocked = false
+            clearSince = nil
             return
         }
 
@@ -190,7 +257,9 @@ final class SpatialAudioEngine {
         guard let target else {
             closeness = 0
             targetDistance = nil
+            targetBearing = nil
             targetHistory.removeAll()
+            trackClearing(closeness: 0, now: now)
             return
         }
         let distance = target.hit.horizontalDistance
@@ -198,6 +267,8 @@ final class SpatialAudioEngine {
         let c = min(1, max(0, (range - distance) / (range - touchDistance)))
         closeness = c
         targetDistance = distance
+        targetBearing = target.bearing
+        trackClearing(closeness: c, now: now)
 
         // Closing speed over the last ~0.6 s of readings.
         targetHistory.append((snap.timestamp, distance))
@@ -211,7 +282,7 @@ final class SpatialAudioEngine {
         // Beep rate and loudness rise steeply near the end; solid near contact.
         let far = 1 - c
         let interval = fastestInterval + (slowestInterval - fastestInterval) * Double(far * far)
-        guard now - lastBeep >= interval else { return }
+        guard now - lastBeep >= interval, now >= beepsHeldUntil else { return }
         lastBeep = now
         guard !isMuted else { return }
 
@@ -222,6 +293,28 @@ final class SpatialAudioEngine {
         let gain = (0.18 + 0.72 * c * c) * (ducked ? 0.4 : 1)
         beepPlayer.scheduleBuffer(render(beep, azimuth: target.bearing, gain: gain), completionHandler: nil)
         if hapticsEnabled { haptic.impactOccurred(intensity: CGFloat(0.3 + 0.7 * c)) }
+    }
+
+    /// Blocked-then-clear detection for the clear tick: the user must have been properly
+    /// blocked for a moment, and the cone must stay clear for a moment, so a doorframe
+    /// brushing the edge of the cone does not click.
+    private func trackClearing(closeness c: Float, now: TimeInterval) {
+        if c >= blockedCloseness {
+            if blockedSince == nil { blockedSince = now }
+            if now - blockedSince! >= blockedHold { wasBlocked = true }
+            clearSince = nil
+            return
+        }
+        blockedSince = nil
+        guard wasBlocked else { clearSince = nil; return }
+        guard c < 0.1 else { clearSince = nil; return }   // in between: wait and see
+        if clearSince == nil { clearSince = now }
+        if now - clearSince! >= clearHold {
+            wasBlocked = false
+            clearSince = nil
+            lastClearedTime = now
+            playClearTick()
+        }
     }
 
     /// Horizontal bearing of `point` from the walking heading, radians, right positive.
@@ -274,5 +367,25 @@ final class SpatialAudioEngine {
             out[i] = Float(0.7 * env * value)
         }
         return out
+    }
+
+    /// A short wooden click: high sine with a fast exponential decay, nothing like the beep.
+    private static func tick(rate: Double) -> [Float] {
+        let n = Int(0.045 * rate)
+        var out = [Float](repeating: 0, count: n)
+        for i in 0..<n {
+            let t = Double(i) / rate
+            let env = exp(-t * 110) * min(1, Double(i) / (0.001 * rate))
+            out[i] = Float(0.8 * env * (sin(2 * .pi * 2200 * t) + 0.3 * sin(2 * .pi * 3300 * t)))
+        }
+        return out
+    }
+
+    /// Two rising tones (G5 then C6), 90 ms each with a short gap: "a voice line is coming".
+    private static func chime(rate: Double) -> [Float] {
+        let first = beep(rate: rate, frequency: 784, duration: 0.09)
+        let gap = [Float](repeating: 0, count: Int(0.03 * rate))
+        let second = beep(rate: rate, frequency: 1047, duration: 0.12)
+        return first + gap + second
     }
 }
