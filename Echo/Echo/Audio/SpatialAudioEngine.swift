@@ -339,12 +339,12 @@ final class SpatialAudioEngine {
         if hapticsEnabled { haptic.impactOccurred(intensity: CGFloat(0.3 + 0.7 * c)) }
         guard !isMuted, !hapticsOnly else { return }
 
-        // Low and soft until the last stretch: pitch only climbs in the final 30 cm or so.
-        // Head-height obstacles (a sign, a branch) sit a fifth higher so they sound different.
-        let urgency = c * c * c
+        // One pitch throughout: urgency is carried by rate and loudness, never by a climbing
+        // tone. Head-height obstacles (a sign, a branch) sit a fifth higher so they sound
+        // different from things at body height.
         let overhead = snap.nearestOverheadObstacle.map { abs($0.horizontalDistance - rawDistance) < 0.2 } ?? false
-        let frequency = (520 + 600 * Double(urgency)) * (overhead ? 1.5 : 1)
-        let beep = Self.beep(rate: stereo.sampleRate, frequency: frequency, duration: c > 0.95 ? 0.09 : 0.045)
+        let frequency = 520.0 * (overhead ? 1.5 : 1)
+        let beep = Self.beep(rate: stereo.sampleRate, frequency: frequency, duration: 0.045)
         let gain = (0.10 + 0.6 * c * c) * (ducked ? 0.4 : 1)
         // Pan for where the obstacle will be when the sound comes out, not where it was.
         let predicted = max(0.1, distance - closingSpeed * renderLatency)
