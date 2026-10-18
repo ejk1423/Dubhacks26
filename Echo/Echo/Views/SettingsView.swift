@@ -135,7 +135,7 @@ struct SettingsView: View {
         } header: {
             Text("Voice")
         } footer: {
-            Text("Quiet: only steps, people in your path and safety signs. Normal: also what is ahead, doorways and path changes. Verbose: everything, more often. Premium voices download from Settings › Accessibility › Spoken Content.")
+            Text("Normal: steps, people in your path, which side is open when you are blocked, and safety signs. More: also what is ahead by name, doorways and path changes. Everything: all of it, more often. Premium voices download from Settings › Accessibility › Spoken Content.")
         }
     }
 

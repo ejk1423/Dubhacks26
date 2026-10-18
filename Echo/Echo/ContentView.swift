@@ -70,6 +70,7 @@ struct ContentView: View {
             .onChange(of: audio.hapticsEnabled) { prefs.haptics = audio.hapticsEnabled }
             .onChange(of: audio.hapticsOnly) { prefs.hapticsOnly = audio.hapticsOnly }
             .onChange(of: narrator.isEnabled) { prefs.voice = narrator.isEnabled }
+            .onChange(of: narrator.verbosity) { prefs.verbosity = narrator.verbosity }
             .onChange(of: prefs.cameraFeed) { manager.setCameraFeed(prefs.cameraFeed.mode) }
     }
 
@@ -88,6 +89,7 @@ struct ContentView: View {
         audio.hapticsEnabled = prefs.haptics
         audio.hapticsOnly = prefs.hapticsOnly
         narrator.isEnabled = prefs.voice
+        narrator.verbosity = prefs.verbosity
         manager.setCameraFeed(prefs.cameraFeed.mode)
         manager.start()
         audio.start()

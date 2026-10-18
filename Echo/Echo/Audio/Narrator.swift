@@ -30,16 +30,24 @@ import Observation
 import simd
 
 /// How much the narrator says. Hazards and people walking at the user are always spoken.
+/// The standard level is `quiet` (shown as "Normal"): steps, people in the path, a
+/// blocked side once per stop, safety signs. The others add detail on request.
 enum NarrationVerbosity: String, CaseIterable, Identifiable, Sendable {
     /// Hazards, people in the path, safety signs. Nothing about objects, widths or openings.
     case quiet
-    /// Also: the object ahead, blocked-side guidance, path clear, narrowing, signs with side.
+    /// Also: the object ahead, path clear, narrowing, doorways, signs with side.
     case normal
     /// Also: opening up, side openings while walking, all people nearby, more frequent repeats.
     case verbose
 
     var id: String { rawValue }
-    var title: String { rawValue.capitalized }
+    var title: String {
+        switch self {
+        case .quiet: return "Normal"
+        case .normal: return "More"
+        case .verbose: return "Everything"
+        }
+    }
 
     /// Multiplier on every repeat interval.
     var repeatScale: Double {

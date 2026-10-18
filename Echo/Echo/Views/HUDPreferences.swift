@@ -40,6 +40,7 @@ final class HUDPreferences {
         static let voice = "echo.voice"
         static let haptics = "echo.haptics"
         static let hapticsOnly = "echo.hapticsOnly"
+        static let verbosity = "echo.verbosity"
         static let volume = "echo.volume"
     }
 
@@ -50,6 +51,8 @@ final class HUDPreferences {
     var haptics: Bool { didSet { defaults.set(haptics, forKey: Key.haptics) } }
     /// Haptic ticks instead of beeps.
     var hapticsOnly: Bool { didSet { defaults.set(hapticsOnly, forKey: Key.hapticsOnly) } }
+    /// How much the voice says; the standard is the quiet level.
+    var verbosity: NarrationVerbosity { didSet { defaults.set(verbosity.rawValue, forKey: Key.verbosity) } }
     var volume: Float { didSet { defaults.set(volume, forKey: Key.volume) } }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -62,6 +65,7 @@ final class HUDPreferences {
         voice = defaults.object(forKey: Key.voice) as? Bool ?? true
         haptics = defaults.object(forKey: Key.haptics) as? Bool ?? true
         hapticsOnly = defaults.bool(forKey: Key.hapticsOnly)
+        verbosity = NarrationVerbosity(rawValue: defaults.string(forKey: Key.verbosity) ?? "") ?? .quiet
         volume = defaults.object(forKey: Key.volume) as? Float ?? 0.8
     }
 }
