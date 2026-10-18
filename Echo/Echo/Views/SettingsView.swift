@@ -2,8 +2,13 @@
 //  SettingsView.swift
 //  Echo
 //
-//  Grouped settings: Sound, Display, Map, Help, About. Sound toggles write through to
-//  the audio engine and narrator; the HUD mirrors them into HUDPreferences.
+//  Grouped settings in a system sheet: Sound, Voice, Display, Map, Help, About.
+//  Sound toggles write through to the audio engine and narrator; the HUD mirrors them
+//  into HUDPreferences.
+//
+//  HIG › Sheets: medium and large detents, a grabber, Done on the trailing edge, swipe
+//  to dismiss. HIG › Toggles: switches only inside list rows, so every on/off here is
+//  a plain `Toggle` in a `Form`. Every row is a system control at its default size.
 //
 
 import AVFAudio
@@ -14,6 +19,7 @@ struct SettingsView: View {
     @Bindable var narrator: Narrator
     @Bindable var prefs: HUDPreferences
     let manager: ARLiDARManager
+    /// Called before the sheet dismisses; the HUD presents the follow-up once it has gone.
     let onReplayTutorial: () -> Void
     let onShowMap: () -> Void
 
@@ -34,7 +40,6 @@ struct SettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
-                        .font(Theme.font(17, .bold))
                 }
             }
         }
@@ -46,7 +51,7 @@ struct SettingsView: View {
 
     private var soundSection: some View {
         Section {
-            HStack(spacing: 12) {
+            HStack(spacing: HUDMetrics.spacing) {
                 Image(systemName: "speaker.wave.1.fill").foregroundStyle(.secondary)
                 Slider(value: $audio.masterVolume, in: 0...1)
                     .accessibilityLabel("Beep volume")
@@ -62,27 +67,26 @@ struct SettingsView: View {
                     Haptics.select()
                 })) {
                 Text("Beeps").tag(0)
-                Text("Haptics only").tag(1)
+                Text("Haptics Only").tag(1)
                 Text("Off").tag(2)
             } label: {
-                Label("Collision warning", systemImage: "dot.radiowaves.left.and.right")
+                Label("Collision Warning", systemImage: "dot.radiowaves.left.and.right")
             }
             .pickerStyle(.segmented)
             Toggle(isOn: $narrator.isEnabled) {
                 Label("Voice", systemImage: "waveform")
             }
             Toggle(isOn: $audio.hapticsEnabled) {
-                Label("Haptic ticks", systemImage: "iphone.radiowaves.left.and.right")
+                Label("Haptic Ticks", systemImage: "iphone.radiowaves.left.and.right")
             }
             Toggle(isOn: Binding(get: { narrator.earconsEnabled }, set: { narrator.earconsEnabled = $0; audio.earconsEnabled = $0 })) {
-                Label("Chimes before warnings", systemImage: "bell.badge.waveform")
+                Label("Chimes Before Warnings", systemImage: "bell.badge.waveform")
             }
         } header: {
             Text("Sound")
         } footer: {
-            Text("Warnings only come when you are about 1.3 seconds from hitting what is ahead, or already within arm's reach. Standing still or walking past is silent. Haptics only keeps the ticks in your hand and drops the sound.")
+            Text("Warnings only come when you are about 1.3 seconds from hitting what is ahead, or already within arm's reach. Standing still or walking past is silent. Haptics Only keeps the ticks in your hand and drops the sound.")
         }
-        .onChange(of: audio.isMuted) { Haptics.select() }
         .onChange(of: narrator.isEnabled) { Haptics.select() }
         .onChange(of: audio.hapticsEnabled) { Haptics.select() }
     }
@@ -102,15 +106,15 @@ struct SettingsView: View {
             .onChange(of: narrator.verbosity) { Haptics.select() }
             Picker(selection: Binding(get: { narrator.preferredVoiceIdentifier ?? "" },
                                       set: { narrator.preferredVoiceIdentifier = $0.isEmpty ? nil : $0 })) {
-                Text("Best available").tag("")
+                Text("Best Available").tag("")
                 ForEach(Narrator.englishVoices(), id: \.identifier) { voice in
                     Text("\(voice.name) · \(voice.language)").tag(voice.identifier)
                 }
             } label: {
                 Label("Voice", systemImage: "person.wave.2")
             }
-            LabeledContent("In use", value: narrator.voiceDescription)
-            HStack(spacing: 12) {
+            LabeledContent("In Use", value: narrator.voiceDescription)
+            HStack(spacing: HUDMetrics.spacing) {
                 Image(systemName: "tortoise.fill").foregroundStyle(.secondary)
                 Slider(value: $narrator.speechRate, in: 0.4...0.65)
                     .accessibilityLabel("Speaking rate")
@@ -119,7 +123,7 @@ struct SettingsView: View {
             Button {
                 narrator.announce("This is how I sound.")
             } label: {
-                Label("Test voice", systemImage: "play.fill")
+                Label("Test Voice", systemImage: "play.fill")
             }
         } header: {
             Text("Voice")
@@ -133,7 +137,7 @@ struct SettingsView: View {
     private var displaySection: some View {
         Section {
             Toggle(isOn: $prefs.simpleMode) {
-                Label("Simple mode", systemImage: "circle.grid.cross.fill")
+                Label("Simple Mode", systemImage: "textformat.size.larger")
             }
             .onChange(of: prefs.simpleMode) { Haptics.select() }
             Picker(selection: $prefs.cameraFeed) {
@@ -146,11 +150,11 @@ struct SettingsView: View {
             .pickerStyle(.segmented)
             .accessibilityLabel("Camera feed")
             // TODO: `ARLiDARManager` has no public switch for the surface rendering
-            // (SurfaceRenderer is private). Expose one and add a "Show surfaces" toggle here.
+            // (SurfaceRenderer is private). Expose one and add a "Show Surfaces" toggle here.
         } header: {
             Text("Display")
         } footer: {
-            Text("Simple mode shows only the way ahead in giant type and the Describe button. Detail mode adds the map, camera readings and status, for sighted testers. Dim or switch off the camera to see the LiDAR surfaces on black.")
+            Text("Simple Mode shows only the way ahead in large type and the Describe button. Detail Mode adds the map and what the camera sees, for sighted testers. Dim or switch off the camera to see the LiDAR surfaces on black.")
         }
     }
 
@@ -159,16 +163,16 @@ struct SettingsView: View {
     private var mapSection: some View {
         Section("Map") {
             Button {
-                dismiss()
                 onShowMap()
+                dismiss()
             } label: {
-                Label("Show full map", systemImage: "map.fill")
+                Label("Show Full Map", systemImage: "map")
             }
             Button(role: .destructive) {
                 Haptics.toggled(on: false)
                 manager.reset()
             } label: {
-                Label("Reset map", systemImage: "arrow.counterclockwise")
+                Label("Reset Map", systemImage: "arrow.counterclockwise")
             }
             .accessibilityHint("Forgets every scanned surface and starts tracking again")
         }
@@ -179,31 +183,30 @@ struct SettingsView: View {
     private var helpSection: some View {
         Section {
             Button {
-                dismiss()
                 onReplayTutorial()
+                dismiss()
             } label: {
-                Label("Replay tutorial", systemImage: "play.circle.fill")
+                Label("Replay Tutorial", systemImage: "play.circle")
             }
-            VStack(alignment: .leading, spacing: 8) {
-                helpRow("checkmark.circle.fill", Theme.clear, "Green and silence: the way ahead is clear.")
-                helpRow("exclamationmark.circle.fill", Theme.caution, "Amber and slow beeps: something is in your path. Slow down.")
-                helpRow("octagon.fill", Theme.danger, "Red and a solid tone: stop, you are about to touch it.")
-                helpRow("figure.stairs", Theme.danger, "\"Step up\" / \"Step down\" is spoken about a second and a half before your foot gets there.")
-            }
-            .padding(.vertical, 4)
+            // The legend for the proximity state: the one place the three state colours are
+            // explained, each paired with its symbol and words.
+            helpRow("checkmark", .green, "Green and silence: the way ahead is clear.")
+            helpRow("exclamationmark.triangle.fill", .orange, "Orange and slow beeps: something is in your path. Slow down.")
+            helpRow("hand.raised.fill", .red, "Red and a solid tone: stop, you are about to touch it.")
+            helpRow("figure.stairs", .red, "\"Step up\" and \"Step down\" are spoken about a second and a half before your foot gets there.")
         } header: {
             Text("Help")
         }
     }
 
     private func helpRow(_ symbol: String, _ tint: Color, _ text: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: symbol)
-                .foregroundStyle(tint)
-                .frame(width: 22)
+        Label {
             Text(text)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+        } icon: {
+            Image(systemName: symbol)
+                .foregroundStyle(tint)
         }
         .accessibilityElement(children: .combine)
     }
@@ -215,8 +218,8 @@ struct SettingsView: View {
             LabeledContent("Version", value: Self.version)
             LabeledContent("LiDAR", value: manager.capabilities.hasLiDAR ? "Ready" : "Not available")
             LabeledContent("Headphones", value: audio.headphonesConnected ? "Connected" : "Not connected")
-            LabeledContent("Mesh chunks", value: "\(manager.meshAnchorCount)")
-            LabeledContent("Walking speed", value: String(format: "%.1f m/s", manager.snapshot?.walkingSpeed ?? 0))
+            LabeledContent("Mesh Chunks", value: "\(manager.meshAnchorCount)")
+            LabeledContent("Walking Speed", value: String(format: "%.1f m/s", manager.snapshot?.walkingSpeed ?? 0))
         } header: {
             Text("About")
         } footer: {

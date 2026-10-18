@@ -1,0 +1,146 @@
+//
+//  HUDBar.swift
+//  Echo
+//
+//  The controls that float over the camera, all system components so they pick up
+//  Liquid Glass, press states, Dynamic Type and accessibility on their own
+//  (HIG › Buttons: "System buttons offer ... built-in interaction states,
+//  accessibility support, and appearance adaptation").
+//
+//    * DescribeButton   the one prominent action (HIG: "Keep the number of prominent
+//                       buttons to one or two per view").
+//    * HUDControlBar    Repeat, Mute Beeps and Settings in one glass group, like a
+//                       bottom toolbar (HIG › Toolbars: one group, symbols, no borders).
+//    * StatusLine       a single quiet line at the top for anything that needs saying.
+//    * MinimapButton    the small map that opens the full one.
+//
+
+import SwiftUI
+
+// MARK: - Describe
+
+struct DescribeButton: View {
+    let enabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            Label("Describe", systemImage: "text.bubble.fill")
+                .fontWeight(.semibold)
+                .frame(maxWidth: .infinity)
+        }
+        // The accent-tinted glass marks this as the primary action (HIG › Color, Liquid
+        // Glass: "apply color to the background rather than to symbols or text").
+        .hudButtonStyle(prominent: true)
+        .controlSize(.extraLarge)
+        .disabled(!enabled)
+        .accessibilityLabel("Describe surroundings")
+        .accessibilityHint("Speaks what is around you: the room, what is ahead, which sides are open, people and steps.")
+    }
+}
+
+// MARK: - Bottom control group
+
+struct HUDControlBar: View {
+    @Bindable var audio: SpatialAudioEngine
+    let onRepeat: () -> Void
+    let onSettings: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Haptic on the tap itself, not on every change (the persisted value is applied at launch).
+    private var muted: Binding<Bool> {
+        Binding(get: { audio.isMuted }, set: { audio.isMuted = $0; Haptics.toggled(on: !$0) })
+    }
+
+    var body: some View {
+        // One container so the three glass circles read as a single group.
+        HUDGlassGroup {
+            HStack(spacing: HUDMetrics.spacingSmall) {
+                Button {
+                    Haptics.tap()
+                    onRepeat()
+                } label: {
+                    Label("Repeat", systemImage: "repeat")
+                }
+                .accessibilityHint("Says the last spoken line again")
+
+                // HIG › Toggles: "Outside of a list, use a button that behaves like a toggle,
+                // not a switch", and show state by more than colour: the slash does that.
+                Toggle(isOn: muted) {
+                    Label("Mute Beeps", systemImage: audio.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                }
+                .toggleStyle(.button)
+                .accessibilityHint("Silences the collision beeps")
+
+                Button {
+                    Haptics.tap()
+                    onSettings()
+                } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+                .accessibilityHint("Sound, voice, display, map and help")
+            }
+            .labelStyle(.iconOnly)
+            .hudButtonStyle()
+            .buttonBorderShape(.circle)
+            .controlSize(.extraLarge)
+            .fontWeight(.semibold)
+        }
+    }
+}
+
+// MARK: - Status line
+
+/// The one line the top of the HUD may show: a session problem, a missing sensor, or
+/// (in Detail mode) what the camera sees. Text-bearing, so it uses the regular glass
+/// variant (HIG › Materials: regular "when components have a significant amount of text").
+struct StatusLine: View {
+    let symbol: String
+    let text: String
+
+    var body: some View {
+        Label(text, systemImage: symbol)
+            .font(.subheadline)
+            .fontWeight(.semibold)
+            .foregroundStyle(.primary)
+            .lineLimit(2)
+            .padding(.horizontal, HUDMetrics.spacing)
+            .padding(.vertical, HUDMetrics.spacingSmall + 2)
+            .hudSurface(.regular, in: .capsule)
+            .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Minimap button
+
+struct MinimapButton: View {
+    let snapshot: SceneSnapshot?
+    let radius: Float
+    let coneHalfAngle: Float
+    let alertRange: Float
+    let action: () -> Void
+
+    @ScaledMetric(relativeTo: .body) private var size: CGFloat = 96
+
+    var body: some View {
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            MinimapView(snapshot: snapshot, radius: radius, coneHalfAngle: coneHalfAngle, alertRange: alertRange)
+                .frame(width: min(size, 140), height: min(size, 140))
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        // The only custom glass control; interactive so it has a press state (HIG › Buttons:
+        // "Always include a press state for a custom button").
+        .hudSurface(.clear, in: .circle, interactive: true)
+        .accessibilityLabel("Map of the room")
+        .accessibilityHint("Opens the full map with distances in every direction")
+    }
+}

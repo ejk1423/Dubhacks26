@@ -3,15 +3,22 @@
 //  Echo
 //
 //  The HUD. Wires the perception manager to the audio engine and narrator, derives
-//  one `ProximityState` from them, and lays it out in one of two ways:
+//  one `ProximityState` from them, and lays it out over the camera in two layers
+//  (HIG › Materials): the AR view is content; a handful of Liquid Glass elements
+//  float above it.
 //
-//    * Simple mode: the giant proximity hero and the Describe button. For the actual
-//      blind / low-vision user: nothing to read, everything to hear.
-//    * Detail mode: adds the minimap, sensor status, what the camera sees and the
-//      full control row. For sighted testers and demos.
+//    Top       Detail mode: the small map (leading) and one status line (trailing).
+//              Simple mode: the status line only, and only when there is a problem.
+//    Bottom    The proximity gauge (the single focal point), the prominent Describe
+//              button, and one group of three glass buttons: Repeat, Mute Beeps,
+//              Settings. All in the bottom third, within thumb reach.
 //
-//  Pieces live under Views/: Theme, ProximityState, ProximityHero, HUDControls,
-//  MinimapView, OnboardingView, SettingsView, HUDPreferences.
+//  Settings and the full map are sheets; the tutorial is a full-screen cover. Only
+//  one is shown at a time (HIG › Sheets): a request made from inside Settings is
+//  carried out after that sheet has gone.
+//
+//  Pieces live under Views/: HUDStyle, ProximityState, ProximityGauge, HUDBar,
+//  MinimapView (+ MapView), OnboardingView, SettingsView, HUDPreferences.
 //
 
 import SwiftUI
@@ -26,36 +33,32 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showMap = false
     @State private var showOnboarding = false
+    @State private var afterSettings: FollowUp?
+
+    private enum FollowUp { case map, tutorial }
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ARWireframeView(manager: manager)
             .ignoresSafeArea()
-            .overlay { EdgeGlow(color: state.color, strength: min(0.6, state.glowStrength)) }
-            .overlay(alignment: .top) { top }
-            .overlay(alignment: .bottom) { footer }
-            .overlay {
-                if showMap {
-                    ExpandedMapView(manager: manager, audio: audio, accent: state.color) {
-                        withAnimation(.easeOut(duration: 0.2)) { showMap = false }
-                    }
-                    .transition(.opacity)
-                }
-            }
-            .overlay {
-                if showOnboarding {
-                    OnboardingView {
-                        prefs.hasSeenOnboarding = true
-                        withAnimation(.easeOut(duration: 0.25)) { showOnboarding = false }
-                    }
-                    .transition(.opacity)
-                }
-            }
-            .sheet(isPresented: $showSettings) {
+            .overlay(alignment: .top) { topBar }
+            .overlay(alignment: .bottom) { bottomColumn }
+            .sheet(isPresented: $showSettings, onDismiss: runFollowUp) {
                 SettingsView(audio: audio, narrator: narrator, prefs: prefs, manager: manager,
-                             onReplayTutorial: { withAnimation { showOnboarding = true } },
-                             onShowMap: { withAnimation { showMap = true } })
+                             onReplayTutorial: { afterSettings = .tutorial },
+                             onShowMap: { afterSettings = .map })
             }
-            .animation(.easeOut(duration: 0.25), value: prefs.simpleMode)
+            .sheet(isPresented: $showMap) {
+                MapView(manager: manager, audio: audio)
+            }
+            .fullScreenCover(isPresented: $showOnboarding) {
+                OnboardingView {
+                    prefs.hasSeenOnboarding = true
+                    showOnboarding = false
+                }
+            }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: prefs.simpleMode)
             .onAppear(perform: startUp)
             .onDisappear {
                 manager.pause()
@@ -70,7 +73,6 @@ struct ContentView: View {
             .onChange(of: audio.hapticsOnly) { prefs.hapticsOnly = audio.hapticsOnly }
             .onChange(of: narrator.isEnabled) { prefs.voice = narrator.isEnabled }
             .onChange(of: prefs.cameraFeed) { manager.setCameraFeed(prefs.cameraFeed.mode) }
-            .preferredColorScheme(.dark)
     }
 
     // MARK: Lifecycle
@@ -92,6 +94,16 @@ struct ContentView: View {
         manager.start()
         audio.start()
         if !prefs.hasSeenOnboarding { showOnboarding = true }
+    }
+
+    /// Presents whatever Settings asked for, now that its sheet is gone.
+    private func runFollowUp() {
+        guard let followUp = afterSettings else { return }
+        afterSettings = nil
+        switch followUp {
+        case .map: showMap = true
+        case .tutorial: showOnboarding = true
+        }
     }
 
     // MARK: Derived state
@@ -118,7 +130,8 @@ struct ContentView: View {
             .sorted { ($0.distance ?? 99) < ($1.distance ?? 99) }
     }
 
-    /// Second line under the state: the last spoken line for a few seconds, else what is ahead by name.
+    /// Second line under the state (Detail mode): the last spoken line for a few
+    /// seconds, else what is ahead by name.
     private var detailLine: String? {
         if let spoken = narrator.lastLine, ProcessInfo.processInfo.systemUptime - narrator.lastLineTime < 6 {
             return spoken
@@ -146,120 +159,94 @@ struct ContentView: View {
         }
     }
 
-    // MARK: Top
-
-    /// Only problems are shown; when everything is ready the top is just the map.
-    private var problems: [(symbol: String, text: String)] {
-        var list: [(String, String)] = []
-        if !manager.capabilities.hasLiDAR { list.append(("sensor.fill", "No LiDAR")) }
-        if !audio.headphonesConnected { list.append(("headphones", "No headphones")) }
-        if running, !floorFound { list.append(("square.stack.3d.down.right.fill", "Finding floor")) }
-        return list
-    }
-
-    /// The one thing worth a chip right now, most important first.
-    private var contextChip: (symbol: String, text: String, tint: Color)? {
+    /// The one thing worth a line at the top right now, most important first. Problems
+    /// in both modes; what the camera sees only in Detail mode (HIG › Designing for iOS:
+    /// "limiting the number of onscreen controls while making secondary details ...
+    /// discoverable").
+    private var statusLine: (symbol: String, text: String)? {
+        if let statusMessage { return ("exclamationmark.circle", statusMessage) }
+        if !manager.capabilities.hasLiDAR { return ("sensor.fill", "No LiDAR on this device") }
+        if !audio.headphonesConnected { return ("headphones", "No headphones") }
+        if running, !floorFound { return ("square.stack.3d.down.right", "Finding the floor") }
+        guard !prefs.simpleMode else { return nil }
         if let person = peopleAhead.first(where: \.movingTowardYou) {
-            return ("figure.walk.motion", person.distance.map { String(format: "%@ coming · %.1f m", person.label, $0) } ?? "\(person.label) coming", Theme.danger)
+            return ("figure.walk.motion", person.distance.map { String(format: "%@ coming · %.1f m", person.label, $0) } ?? "\(person.label) coming")
         }
         if let person = peopleAhead.first {
-            return ("figure.stand", person.distance.map { String(format: "%@ · %.1f m", person.label, $0) } ?? person.label, Theme.live)
+            return ("figure.stand", person.distance.map { String(format: "%@ · %.1f m", person.label, $0) } ?? person.label)
         }
         if let overhead = snapshot?.nearestOverheadObstacle, overhead.horizontalDistance < 1.5 {
-            return ("arrow.down.to.line", String(format: "Overhead · %.1f m", overhead.horizontalDistance), Theme.caution)
+            return ("arrow.down.to.line", String(format: "Low overhead · %.1f m", overhead.horizontalDistance))
         }
         if let door = snapshot?.openings.first(where: \.isDoorway) {
             let side = door.bearing < -0.4 ? "left" : (door.bearing > 0.4 ? "right" : "ahead")
-            return ("door.left.hand.open", String(format: "Doorway %@ · %.1f m", side, door.distance), .white)
+            return ("door.left.hand.open", String(format: "Doorway %@ · %.1f m", side, door.distance))
         }
-        if let scene = freshVision?.scene { return ("eye.fill", scene, .white) }
+        if let scene = freshVision?.scene { return ("eye", scene) }
         return nil
     }
 
-    @ViewBuilder private var top: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let statusMessage {
-                StatusBanner(text: statusMessage, tint: running ? Theme.caution : Theme.danger)
-                    .frame(maxWidth: .infinity)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-            HStack(alignment: .top, spacing: 8) {
-                if !prefs.simpleMode {
-                    Button {
-                        Haptics.tap()
-                        withAnimation(.easeOut(duration: 0.2)) { showMap = true }
-                    } label: {
-                        MinimapView(snapshot: snapshot, radius: manager.config.mapRadius,
-                                    coneHalfAngle: audio.coneHalfAngle, alertRange: audio.alertRange,
-                                    accent: state.color)
-                            .frame(width: 136, height: 136)
-                            .glass(cornerRadius: 20)
-                            .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Map of the room")
-                    .accessibilityHint("Double tap to open the full-screen map with distances in every direction")
-                }
+    // MARK: Top
+
+    @ViewBuilder private var topBar: some View {
+        // Side by side when the status fits; stacked at large text sizes
+        // (HIG › Typography: "consider using a stacked layout").
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: HUDMetrics.spacing) {
+                minimap
                 Spacer(minLength: 0)
-                VStack(alignment: .trailing, spacing: 6) {
-                    ForEach(Array(problems.enumerated()), id: \.offset) { _, problem in
-                        StatusChip(symbol: problem.symbol, text: problem.text, ok: false)
-                    }
-                    if !prefs.simpleMode, let chip = contextChip {
-                        StatusChip(symbol: chip.symbol, text: chip.text, tint: chip.tint)
-                    }
-                }
+                status
+            }
+            // No Spacer here: in an overlay it would stretch to the full height.
+            VStack(alignment: .leading, spacing: HUDMetrics.spacingSmall) {
+                minimap
+                status
             }
         }
-        .padding(.top, 6)
-        .padding(.horizontal, Theme.gutter)
+        .padding(.horizontal, HUDMetrics.margin)
+        .padding(.top, HUDMetrics.spacingSmall)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(.easeOut(duration: 0.2), value: statusMessage)
-        .animation(.easeOut(duration: 0.2), value: problems.count)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: statusLine?.text)
+        // The HUD sits over camera content, so it keeps a dark appearance; the sheets
+        // follow the system. Colours stay semantic so the swap is just the scheme.
+        .environment(\.colorScheme, .dark)
+        .accessibilitySortPriority(0)
+    }
+
+    @ViewBuilder private var minimap: some View {
+        if !prefs.simpleMode {
+            MinimapButton(snapshot: snapshot, radius: manager.config.mapRadius,
+                          coneHalfAngle: audio.coneHalfAngle, alertRange: audio.alertRange) {
+                showMap = true
+            }
+        }
+    }
+
+    @ViewBuilder private var status: some View {
+        if let line = statusLine {
+            StatusLine(symbol: line.symbol, text: line.text)
+                .transition(.opacity)
+        }
     }
 
     // MARK: Bottom
 
-    @ViewBuilder private var footer: some View {
-        VStack(spacing: 12) {
-            if prefs.simpleMode {
-                ProximityHero(state: state, detail: detailLine, large: true)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 18)
-                    .glass(cornerRadius: 36, tint: state.color, tintOpacity: 0.16)
-            } else {
-                ProximityHero(state: state, detail: detailLine)
+    @ViewBuilder private var bottomColumn: some View {
+        VStack(spacing: HUDMetrics.spacing) {
+            ProximityGauge(state: state, detail: prefs.simpleMode ? nil : detailLine, large: prefs.simpleMode)
+                .accessibilitySortPriority(3)
+            DescribeButton(enabled: running) {
+                narrator.describe(snapshot: snapshot, vision: manager.visionReport)
             }
-            HStack(spacing: 8) {
-                DescribeButton(enabled: running, large: false) { describe() }
-                IconButton(symbol: "arrow.counterclockwise.circle.fill", label: "Repeat",
-                           hint: "Says the last spoken line again") {
-                    narrator.repeatLast()
-                }
-                IconButton(symbol: audio.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                           label: audio.isMuted ? "Beeps off" : "Beeps on", hint: "Toggles the collision beeps",
-                           dimmed: audio.isMuted) {
-                    audio.isMuted.toggle()
-                    Haptics.toggled(on: !audio.isMuted)
-                }
-                IconButton(symbol: "gearshape.fill", label: "Settings", hint: "Sound, voice, display, map and help") {
-                    showSettings = true
-                }
-            }
+            .accessibilitySortPriority(2)
+            HUDControlBar(audio: audio, onRepeat: { narrator.repeatLast() }, onSettings: { showSettings = true })
+                .accessibilitySortPriority(1)
         }
-        .padding(.horizontal, Theme.gutter)
-        .padding(.bottom, 10)
-        .frame(maxWidth: .infinity)
-        .background(
-            LinearGradient(colors: [.clear, .black.opacity(prefs.simpleMode ? 0.85 : 0.65)],
-                           startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-        )
-    }
-
-    private func describe() {
-        narrator.describe(snapshot: snapshot, vision: manager.visionReport)
+        .frame(maxWidth: HUDMetrics.maxColumnWidth)
+        .padding(.horizontal, HUDMetrics.margin)
+        .padding(.bottom, HUDMetrics.spacingSmall)
+        .environment(\.colorScheme, .dark)
+        .accessibilitySortPriority(1)
     }
 }
 

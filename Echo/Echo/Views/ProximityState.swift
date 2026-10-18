@@ -2,10 +2,14 @@
 //  ProximityState.swift
 //  Echo
 //
-//  One value that sums up the way ahead for the HUD: what to say, which of the three
-//  colours to use, how far. Derived from the audio engine's target (the same thing
-//  the beeps follow) and the first trip hazard, so the screen never disagrees with
-//  the sound. `StatusAnnouncer` turns changes of it into VoiceOver announcements.
+//  One value that sums up the way ahead for the HUD: what to say, which symbol and
+//  which of the three state colours to use, how far. Derived from the audio engine's
+//  target (the same thing the beeps follow) and the first trip hazard, so the screen
+//  never disagrees with the sound. `StatusAnnouncer` turns changes of it into
+//  VoiceOver announcements.
+//
+//  HIG › Color, "Inclusive color": every state has a word *and* a symbol, so colour
+//  is never the only carrier of meaning.
 //
 
 import SwiftUI
@@ -76,38 +80,39 @@ nonisolated struct ProximityState: Equatable, Sendable {
         }
     }
 
-    /// Symbol shown in the gauge when there is no distance to show.
-    var symbol: String? {
+    /// SF Symbol that goes with the word. Chosen for meaning (HIG › SF Symbols), not look.
+    var symbol: String {
         switch kind {
         case .starting: return "ellipsis"
         case .clear: return "checkmark"
+        case .ahead: return "exclamationmark.circle"
+        case .slow: return "exclamationmark.triangle.fill"
+        case .stop: return "hand.raised.fill"
         case .hazard(.bump): return "arrow.up.to.line"
         case .hazard(.drop): return "arrow.down.to.line"
         case .hazard(.unknownSurface): return "questionmark"
         case .edge: return "arrow.down.right.and.arrow.up.left"
         case .floorObject: return "shippingbox.fill"
-        case .ahead, .slow, .stop: return nil
         }
     }
 
-    /// Continuous colour: green far away, amber in the middle, red at contact.
+    /// One of the three system state colours (they carry their own Increase Contrast and
+    /// dark / light variants, HIG › Color: "Prefer system-defined colors").
     var color: Color {
-        switch kind {
-        case .starting: return Theme.inactive
-        case .clear: return Theme.clear
-        case .hazard, .edge: return Theme.danger
-        case .floorObject: return Theme.caution
-        case .ahead, .slow, .stop: return Theme.proximityColor(closeness: closeness)
+        switch level {
+        case .inactive: return .secondary
+        case .clear: return .green
+        case .caution: return .orange
+        case .danger: return .red
         }
     }
 
-    /// How strongly the screen edge glows in `color`.
-    var glowStrength: Double {
+    /// How much of the gauge ring to fill, nil when there is nothing to measure.
+    var ringFill: Float? {
         switch kind {
-        case .starting, .clear: return 0
-        case .hazard, .edge: return 0.55
-        case .floorObject: return 0.35
-        case .ahead, .slow, .stop: return Double(closeness * closeness) * 0.9
+        case .starting, .clear: return nil
+        case .hazard, .edge, .floorObject: return 1
+        case .ahead, .slow, .stop: return max(0.03, closeness)
         }
     }
 
